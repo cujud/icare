@@ -1,0 +1,24 @@
+{{define "content"}}
+<div class="page-heading">
+  <div>
+    <p class="eyebrow">CATATAN PEMANTAUAN</p>
+    <h1>Riwayat aktivitas</h1>
+    <p class="muted">Aktivitas pompa di Sawah Blok A.</p>
+  </div>
+  <span class="status-pill"><span class="status-dot"></span> Data demo</span>
+</div>
+<section class="card activity-card page-card">
+  <div class="section-heading"><h2>Aktivitas terbaru</h2><span class="muted">{{len .Events}} kejadian</span></div>
+  {{if .Events}}
+  <div class="table-scroll">
+    <table>
+      <thead><tr><th>Waktu</th><th>Kejadian</th><th>Mode</th></tr></thead>
+      <tbody>{{range .Events}}<tr><td>{{.Time}}</td><td>{{.Description}}</td><td><span class="mode-tag">{{.Mode}}</span></td></tr>{{end}}</tbody>
+    </table>
+  </div>
+  {{else}}
+    <p class="empty-state">Belum ada aktivitas pompa.</p>
+  {{end}}
+</section>
+<p class="demo-hint page-hint">Riwayat ini tersimpan di memori dan akan direset saat server dimulai ulang.</p>
+{{end}}

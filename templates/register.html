@@ -1,0 +1,22 @@
+{{define "content"}}
+<p class="eyebrow">MULAI PANTAU SAWAH</p>
+<h1>Buat akun</h1>
+<p class="auth-subtitle">Isi data singkat untuk mulai memantau sawah Anda.</p>
+{{if .Error}}<div class="alert" role="alert">{{.Error}}</div>{{end}}
+<form method="post" action="/register" class="form-stack">
+  <label for="name">Nama lengkap</label>
+  <input id="name" name="name" type="text" autocomplete="name" placeholder="Nama Anda" required>
+  <label for="register-email">Email</label>
+  <input id="register-email" name="email" type="email" autocomplete="email" placeholder="contoh@email.com" required>
+  <label for="phone">Nomor HP</label>
+  <input id="phone" name="phone" type="tel" autocomplete="tel" placeholder="08xxxxxxxxxx" required>
+  <label for="register-password">Kata sandi</label>
+  <input id="register-password" name="password" type="password" autocomplete="new-password" minlength="8" placeholder="Minimal 8 karakter" required>
+  <label for="password-confirmation">Konfirmasi kata sandi</label>
+  <input id="password-confirmation" name="password_confirmation" type="password" autocomplete="new-password" minlength="8" placeholder="Ulangi kata sandi" required>
+  <label class="checkbox-row"><input type="checkbox" name="terms" required> <span>Saya setuju dengan Syarat &amp; Ketentuan dan Kebijakan Privasi.</span></label>
+  <button class="button button-primary button-wide" type="submit">Daftar sekarang</button>
+</form>
+<p class="auth-footnote">Sudah punya akun? <a class="text-link" href="/login">Masuk</a></p>
+<p class="auth-note">Akun disimpan sementara di memori server dan akan hilang saat server dimulai ulang.</p>
+{{end}}

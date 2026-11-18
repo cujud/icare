@@ -1,0 +1,69 @@
+{{define "layout"}}
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#28631f">
+  <title>{{.Title}} · iCare</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="{{if .IsAuth}}auth-page{{end}}">
+{{if .IsAuth}}
+  <main class="auth-shell">
+    <section class="auth-story" aria-label="Tentang iCare">
+      <a class="brand brand-auth" href="/login" aria-label="iCare">
+        <span class="brand-mark">i</span><span>care</span>
+      </a>
+      <div class="story-copy">
+        <p class="eyebrow">IRIGASI CERDAS · iCARE</p>
+        <h1>Pantau air sawah dan atur pompa dari mana saja.</h1>
+        <ul class="feature-list">
+          <li>Ketinggian air dan debit secara langsung</li>
+          <li>Pompa otomatis atau manual</li>
+          <li>Riwayat aktivitas pompa</li>
+        </ul>
+      </div>
+      <p class="story-note">Prototipe web lokal untuk pemantauan irigasi sawah.</p>
+    </section>
+    <section class="auth-panel">
+      <div class="auth-card">{{template "content" .}}</div>
+    </section>
+  </main>
+{{else}}
+  <div class="app-shell">
+    <aside class="sidebar">
+      <a class="brand brand-sidebar" href="/" aria-label="iCare">
+        <span class="brand-mark">i</span><span>care</span>
+      </a>
+      <nav class="side-nav" aria-label="Navigasi utama">
+        <a class="nav-link {{if eq .Active "Beranda"}}active{{end}}" href="/">Beranda</a>
+        <a class="nav-link {{if eq .Active "Riwayat"}}active{{end}}" href="/history">Riwayat</a>
+        <a class="nav-link {{if eq .Active "Perangkat"}}active{{end}}" href="/devices">Perangkat</a>
+        <a class="nav-link {{if eq .Active "Profil"}}active{{end}}" href="/profile">Profil</a>
+      </nav>
+      <div class="sidebar-footer">
+        <span class="demo-label"><span class="status-dot"></span> Simulasi lokal</span>
+        <form method="post" action="/logout">
+          <button class="logout-button" type="submit">Keluar</button>
+        </form>
+      </div>
+    </aside>
+    <main class="main-content">
+      <header class="mobile-header">
+        <a class="brand brand-mobile" href="/" aria-label="iCare"><span class="brand-mark">i</span><span>care</span></a>
+        <span class="demo-label"><span class="status-dot"></span> Data demo</span>
+      </header>
+      {{template "content" .}}
+    </main>
+  </div>
+  <nav class="mobile-nav" aria-label="Navigasi utama">
+    <a class="{{if eq .Active "Beranda"}}active{{end}}" href="/">Beranda</a>
+    <a class="{{if eq .Active "Riwayat"}}active{{end}}" href="/history">Riwayat</a>
+    <a class="{{if eq .Active "Perangkat"}}active{{end}}" href="/devices">Perangkat</a>
+    <a class="{{if eq .Active "Profil"}}active{{end}}" href="/profile">Profil</a>
+  </nav>
+{{end}}
+</body>
+</html>
+{{end}}

@@ -1,0 +1,22 @@
+{{define "content"}}
+<div class="page-heading">
+  <div>
+    <p class="eyebrow">PENGATURAN AKUN</p>
+    <h1>Profil</h1>
+    <p class="muted">Informasi akun iCare Anda.</p>
+  </div>
+</div>
+<section class="card profile-card">
+  <div class="profile-avatar" aria-hidden="true">{{.Initials}}</div>
+  <div class="profile-details">
+    <p class="eyebrow">AKUN AKTIF</p>
+    <h2>{{.UserName}}</h2>
+    <p class="muted">{{.UserEmail}}</p>
+  </div>
+</section>
+<section class="card profile-info">
+  <h2>Lingkungan prototipe</h2>
+  <p class="muted">Data akun, sesi, status pompa, dan aktivitas disimpan di memori selama server berjalan. Gunakan hanya untuk pengujian lokal, bukan untuk data produksi.</p>
+  <form method="post" action="/logout"><button class="button button-outline" type="submit">Keluar dari akun</button></form>
+</section>
+{{end}}

@@ -1,0 +1,33 @@
+{{define "content"}}
+<div class="page-heading">
+  <div>
+    <p class="eyebrow">KONEKTIVITAS</p>
+    <h1>Perangkat</h1>
+    <p class="muted">Status perangkat untuk Sawah Blok A.</p>
+  </div>
+  <span class="status-pill"><span class="status-dot"></span> Simulasi lokal</span>
+</div>
+<section class="device-grid">
+  <article class="card device-card">
+    <span class="device-icon" aria-hidden="true">01</span>
+    <div><p class="eyebrow">SENSOR KETINGGIAN &amp; DEBIT</p><h2>Sensor sawah</h2></div>
+    <span class="device-state">Belum terhubung</span>
+    <p class="muted">Nilai 75 cm dan 85 L/mnt di dashboard adalah data contoh dari rancangan PDF, bukan pembacaan sensor.</p>
+  </article>
+  <article class="card device-card">
+    <span class="device-icon" aria-hidden="true">02</span>
+    <div><p class="eyebrow">KONTROL IRIGASI</p><h2>Pompa air</h2></div>
+    <span class="device-state">Simulasi {{if .PumpOn}}aktif{{else}}mati{{end}}</span>
+    <p class="muted">Tombol kontrol hanya mengubah status simulasi. Integrasi perangkat ESP32 atau MQTT belum dikonfigurasi.</p>
+  </article>
+</section>
+<section class="card connection-card">
+  <h2>Hubungkan perangkat</h2>
+  <p class="muted">Agar data dan perintah pompa berasal dari perangkat nyata, tentukan protokol dan endpoint IoT yang digunakan sebelum integrasi.</p>
+  <div class="connection-details">
+    <div><span class="detail-label">Lokasi</span><strong>Sawah Blok A</strong></div>
+    <div><span class="detail-label">Mode saat ini</span><strong>{{.ModeLabel}}</strong></div>
+    <div><span class="detail-label">Status data</span><strong>Fixture lokal</strong></div>
+  </div>
+</section>
+{{end}}
