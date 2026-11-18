@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"math"
 	"net/http"
 	"net/url"
@@ -25,6 +26,8 @@ type firebaseRTDB struct {
 	authToken     string
 	apiKey        string
 	refreshToken  string
+	email         string
+	password      string
 	anonymousRead bool
 	devicesPath   string
 	httpClient    *http.Client
@@ -49,7 +52,13 @@ type deviceLatest struct {
 	UltrasonicStatus string   `json:"ultrasonic_status"`
 	FlowCalibrated   bool     `json:"flow_calibrated"`
 	SensorAgeMS      int64    `json:"sensor_age_ms"`
-	ReportedAtMS     int64    `json:"reported_at_ms"`
+	ReportedAtMS     int64    `json:"reported_at"`
+	ReceivedAtMS     int64    `json:"received_at"`
+	UploadedAtMS     int64    `json:"uploaded_at"`
+	DebitLPM         *float64 `json:"debit_lpm"`
+	TotalLiter       *float64 `json:"total_liter"`
+	RSSI             *int     `json:"rssi"`
+	CalibrationK     *float64 `json:"calibration_k"`
 }
 
 type deviceReported struct {
@@ -79,6 +88,8 @@ func newFirebaseRTDBFromEnv() (*firebaseRTDB, error) {
 		authToken:     strings.TrimSpace(os.Getenv("ICARE_FIREBASE_AUTH_TOKEN")),
 		apiKey:        strings.TrimSpace(os.Getenv("ICARE_FIREBASE_API_KEY")),
 		refreshToken:  strings.TrimSpace(os.Getenv("ICARE_FIREBASE_REFRESH_TOKEN")),
+		email:         strings.TrimSpace(os.Getenv("ICARE_FIREBASE_EMAIL")),
+		password:      os.Getenv("ICARE_FIREBASE_PASSWORD"),
 		anonymousRead: anonymousRead,
 		devicesPath:   defaultFirebaseDevicesPath,
 		httpClient:    &http.Client{Timeout: 8 * time.Second},
@@ -91,7 +102,9 @@ func (f *firebaseRTDB) ready() bool {
 	}
 	f.tokenMu.Lock()
 	defer f.tokenMu.Unlock()
-	return f.anonymousRead || f.authToken != "" || (f.refreshToken != "" && f.apiKey != "")
+	return f.anonymousRead || f.authToken != "" ||
+		(f.refreshToken != "" && f.apiKey != "") ||
+		(f.email != "" && f.password != "" && f.apiKey != "")
 }
 
 func (f *firebaseRTDB) getDevice(ctx context.Context, deviceID string) (deviceSnapshot, error) {
@@ -160,6 +173,9 @@ func (f *firebaseRTDB) accessToken(ctx context.Context) (string, error) {
 	if f.anonymousRead {
 		return "", nil
 	}
+	if f.refreshToken == "" && f.apiKey != "" && f.email != "" && f.password != "" {
+		return f.signInWithPasswordLocked(ctx)
+	}
 	if f.refreshToken == "" || f.apiKey == "" {
 		if f.authToken != "" {
 			return f.authToken, nil
@@ -213,6 +229,61 @@ func (f *firebaseRTDB) accessToken(ctx context.Context) (string, error) {
 	if result.RefreshToken != "" {
 		f.refreshToken = result.RefreshToken
 	}
+	return f.authToken, nil
+}
+
+// signInWithPasswordLocked masuk ke Firebase Auth memakai email+password akun
+// yang UID-nya diizinkan oleh Realtime Database Rules. Token di-cache dan
+// setelah itu diperbarui lewat refresh token. Pemanggil harus memegang tokenMu.
+func (f *firebaseRTDB) signInWithPasswordLocked(ctx context.Context) (string, error) {
+	if f.authToken != "" && time.Now().Add(time.Minute).Before(f.tokenExpiry) {
+		return f.authToken, nil
+	}
+	payload, err := json.Marshal(map[string]any{
+		"email":             f.email,
+		"password":          f.password,
+		"returnSecureToken": true,
+	})
+	if err != nil {
+		return "", fmt.Errorf("create Firebase sign-in request: %w", err)
+	}
+	request, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodPost,
+		"https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key="+url.QueryEscape(f.apiKey),
+		strings.NewReader(string(payload)),
+	)
+	if err != nil {
+		return "", fmt.Errorf("create Firebase sign-in request: %w", err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	response, err := f.httpClient.Do(request)
+	if err != nil {
+		return "", errors.New("Firebase sign-in: network request failed")
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return "", firebaseResponseError("sign-in", response)
+	}
+	var result struct {
+		IDToken      string `json:"idToken"`
+		RefreshToken string `json:"refreshToken"`
+		ExpiresIn    string `json:"expiresIn"`
+		LocalID      string `json:"localId"`
+	}
+	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&result); err != nil {
+		return "", fmt.Errorf("decode Firebase sign-in response: %w", err)
+	}
+	seconds, err := strconv.Atoi(result.ExpiresIn)
+	if err != nil || result.IDToken == "" || seconds <= 0 {
+		return "", errors.New("Firebase returned an invalid sign-in response")
+	}
+	f.authToken = result.IDToken
+	f.tokenExpiry = time.Now().Add(time.Duration(seconds) * time.Second)
+	if result.RefreshToken != "" {
+		f.refreshToken = result.RefreshToken
+	}
+	log.Printf("Firebase sign-in berhasil (uid %s)", result.LocalID)
 	return f.authToken, nil
 }
 

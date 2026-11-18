@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -204,5 +205,74 @@ func TestFirebasePumpToggleDisabledWithoutCommandSchema(t *testing.T) {
 	}
 	if !strings.Contains(response.Body.String(), "Skema perintah pompa belum tersedia") {
 		t.Errorf("pump toggle response body = %q, want missing command schema message", response.Body.String())
+	}
+}
+
+const gatewayExportJSON = `{"latest":{"calibration_k":0.2,"debit_lpm":0,"fault":"OK","flow_calibrated":false,"jarak_cm":74.5,"lora_online":true,"node":"NODE_01","received_at":1795003357000,"relay_on":false,"reported_at":1795003358000,"rssi":-41,"sensor_age_ms":802,"sensor_seen":true,"total_liter":0,"ultrasonic_fresh":true,"ultrasonic_status":"OK","ultrasonic_valid":true,"uploaded_at":1795003362905},"reported":{"configFresh":false,"reason":"MISSING_CONFIG","relayOn":false,"sensorReady":true,"updatedAtMs":1795003362905}}`
+
+func TestFirebaseDecodesRealGatewayExport(t *testing.T) {
+	var snapshot deviceSnapshot
+	if err := json.Unmarshal([]byte(gatewayExportJSON), &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	latest := snapshot.Latest
+	if latest == nil || latest.DistanceCM == nil || *latest.DistanceCM != 74.5 || latest.UploadedAtMS != 1795003362905 ||
+		latest.RSSI == nil || *latest.RSSI != -41 || latest.DebitLPM == nil || latest.TotalLiter == nil {
+		t.Fatalf("latest = %+v, want values from the real gateway export", latest)
+	}
+}
+
+type signInRewriteTransport struct{ target string }
+
+func (r signInRewriteTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if strings.Contains(req.URL.Host, "identitytoolkit.googleapis.com") {
+		forwarded, err := http.NewRequest(req.Method, r.target+req.URL.RequestURI(), req.Body)
+		if err != nil {
+			return nil, err
+		}
+		forwarded.Header = req.Header
+		return http.DefaultTransport.RoundTrip(forwarded)
+	}
+	return http.DefaultTransport.RoundTrip(req)
+}
+
+func TestFirebaseSignsInWithEmailPasswordAndCachesToken(t *testing.T) {
+	signIns := 0
+	identity := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		signIns++
+		_, _ = io.WriteString(w, `{"idToken":"signed-in-token","refreshToken":"refresh-1","expiresIn":"3600","localId":"uid-1"}`)
+	}))
+	defer identity.Close()
+	database := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("auth") != "signed-in-token" {
+			http.Error(w, `{"error":"Permission denied"}`, http.StatusUnauthorized)
+			return
+		}
+		_, _ = io.WriteString(w, gatewayExportJSON)
+	}))
+	defer database.Close()
+
+	client := &firebaseRTDB{
+		databaseURL: database.URL,
+		apiKey:      "test-key",
+		email:       "gateway@example.com",
+		password:    "secret",
+		devicesPath: "devices",
+		httpClient:  &http.Client{Transport: signInRewriteTransport{target: identity.URL}},
+	}
+	if !client.ready() {
+		t.Fatal("client with API key, email and password must be ready")
+	}
+	for range 2 {
+		snapshot, err := client.getDevice(context.Background(), "ESP32_Gateway")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if snapshot.Latest.Node != "NODE_01" {
+			t.Fatalf("node = %q, want NODE_01", snapshot.Latest.Node)
+		}
+	}
+	if signIns != 1 {
+		t.Fatalf("sign-in calls = %d, want token to be cached after the first", signIns)
 	}
 }

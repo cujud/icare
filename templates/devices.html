@@ -24,10 +24,11 @@
 </section>
 <section class="card connection-card">
   <h2>Hubungkan perangkat</h2>
-  <p class="muted">{{if .FirebaseConnected}}Snapshot terbaru dimuat dari <code>devices/{{.LinkedDeviceID}}</code>. Debit belum dikirim{{if not .FlowCalibrated}} dan sensor debit belum dikalibrasi{{end}}; tekanan air tidak ada pada snapshot.{{else if .LinkedDeviceID}}Perangkat menggunakan path Realtime Database <code>devices/{{.LinkedDeviceID}}</code>.{{else}}Hubungkan petak dengan mengisi ID perangkat Firebase pada formulir di Beranda.{{end}}</p>
+  <p class="muted">{{if .FirebaseConnected}}Snapshot terbaru dimuat dari <code>devices/{{.LinkedDeviceID}}</code>. {{if .DebitAvailable}}Debit terbaca {{printf "%.1f" .DebitLPM}} L/mnt{{if not .FlowCalibrated}} (sensor debit belum dikalibrasi){{end}}.{{else}}Debit belum dikirim.{{end}} Tekanan air tidak ada pada snapshot.{{else if .LinkedDeviceID}}Perangkat menggunakan path Realtime Database <code>devices/{{.LinkedDeviceID}}</code>.{{else}}Hubungkan petak dengan mengisi ID perangkat Firebase pada formulir di Beranda.{{end}}</p>
   <div class="connection-details">
     <div><span class="detail-label">Lokasi</span><strong>Sawah · {{.Petak}}</strong></div>
-    <div><span class="detail-label">Status LoRa</span><strong>{{if .LoRaOnline}}Online{{else}}Offline{{end}}</strong></div>
+    <div><span class="detail-label">Status LoRa</span><strong>{{if .LoRaOnline}}Online{{else}}Offline{{end}}{{if .RSSIAvailable}} ({{.RSSI}} dBm){{end}}</strong></div>
+    <div><span class="detail-label">Update terakhir</span><strong>{{if .LastUpdate}}{{.LastUpdateAgo}} · {{.LastUpdate}}{{else}}Tidak tersedia{{end}}</strong></div>
     <div><span class="detail-label">Konfigurasi perangkat</span><strong>{{if .ConfigFresh}}Diterima{{else if .ConfigReason}}{{.ConfigReason}}{{else}}Tidak tersedia{{end}}</strong></div>
     <div><span class="detail-label">Status data</span><strong>{{if .FirebaseConnected}}Firebase Realtime Database{{else if .LinkedDeviceID}}Koneksi gagal{{else}}Fixture lokal{{end}}</strong></div>
   </div>

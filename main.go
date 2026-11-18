@@ -87,6 +87,15 @@ type PageData struct {
 	SensorAvailable     bool
 	DistanceCM          float64
 	FlowCalibrated      bool
+	DebitAvailable      bool
+	DebitLPM            float64
+	TotalLiter          float64
+	TotalAvailable      bool
+	RSSI                int
+	RSSIAvailable       bool
+	LastUpdate          string
+	LastUpdateAgo       string
+	DeviceStale         bool
 	LoRaOnline          bool
 	SensorSeen          bool
 	PumpStatusAvailable bool
@@ -119,6 +128,9 @@ type App struct {
 	db        *sql.DB
 	state     IrrigationState
 	firebase  *firebaseRTDB
+	// defaultDeviceID dipakai untuk petak yang belum punya ID perangkat sendiri
+	// (ICARE_DEFAULT_DEVICE_ID), sehingga dashboard tidak jatuh ke data demo.
+	defaultDeviceID string
 }
 
 func newApp() (*App, error) {
@@ -163,11 +175,12 @@ func newAppWithDBAndFirebase(db *sql.DB, firebase *firebaseRTDB) (*App, error) {
 	}
 
 	app := &App{
-		mux:       http.NewServeMux(),
-		templates: make(map[string]*template.Template),
-		sessions:  make(map[string]Session),
-		db:        db,
-		firebase:  firebase,
+		mux:             http.NewServeMux(),
+		templates:       make(map[string]*template.Template),
+		sessions:        make(map[string]Session),
+		db:              db,
+		firebase:        firebase,
+		defaultDeviceID: strings.TrimSpace(os.Getenv("ICARE_DEFAULT_DEVICE_ID")),
 		state: IrrigationState{
 			WaterLevel: 75,
 			FlowRate:   85,
@@ -742,6 +755,35 @@ func (a *App) loadDeviceData(ctx context.Context, data *PageData) {
 		data.SensorAvailable = true
 		data.DistanceCM = *latest.DistanceCM
 	}
+	if latest.DebitLPM != nil && finite(*latest.DebitLPM) && *latest.DebitLPM >= 0 {
+		data.DebitAvailable = true
+		data.DebitLPM = *latest.DebitLPM
+	}
+	if latest.TotalLiter != nil && finite(*latest.TotalLiter) && *latest.TotalLiter >= 0 {
+		data.TotalAvailable = true
+		data.TotalLiter = *latest.TotalLiter
+	}
+	if latest.RSSI != nil {
+		data.RSSIAvailable = true
+		data.RSSI = *latest.RSSI
+	}
+	if uploaded := latest.UploadedAtMS; uploaded > 0 {
+		uploadedAt := time.UnixMilli(uploaded)
+		data.LastUpdate = uploadedAt.In(time.FixedZone("WITA", 8*60*60)).Format("02/01/2006 15.04.05") + " WITA"
+		age := time.Since(uploadedAt)
+		switch {
+		case age < 0:
+			data.LastUpdateAgo = "baru saja"
+		case age < time.Minute:
+			data.LastUpdateAgo = fmt.Sprintf("%d detik lalu", int(age.Seconds()))
+		case age < time.Hour:
+			data.LastUpdateAgo = fmt.Sprintf("%d menit lalu", int(age.Minutes()))
+		default:
+			data.LastUpdateAgo = fmt.Sprintf("%d jam lalu", int(age.Hours()))
+		}
+		// Gateway mengunggah berkala; tidak ada pembaruan >3 menit berarti gateway/ESP offline.
+		data.DeviceStale = age > 3*time.Minute
+	}
 	if latest.RelayOn != nil {
 		data.PumpOn = *latest.RelayOn
 		data.PumpStatusAvailable = true
@@ -809,6 +851,9 @@ func (a *App) listPlots(email string) ([]Plot, error) {
 		var plot Plot
 		if err := rows.Scan(&plot.Name, &plot.DeviceID); err != nil {
 			return nil, err
+		}
+		if plot.DeviceID == "" {
+			plot.DeviceID = a.defaultDeviceID
 		}
 		plots = append(plots, plot)
 	}

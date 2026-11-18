@@ -65,6 +65,19 @@ ICARE_FIREBASE_ANONYMOUS_READ=true
 
 Mode anonim tidak mengirim API key atau token; Firebase Realtime Database Rules harus mengizinkan `.read: true` pada path `devices/ESP32_Gateway`. API key hanya diperlukan untuk alur autentikasi Firebase, bukan untuk baca REST publik. Baca publik berarti siapa pun yang mengetahui URL dapat mengambil data sensor pada path tersebut. Pertahankan `.write` tetap dibatasi dan jangan membuka akses tulis publik. File `.env` diabaikan Git.
 
+### Rules dibatasi UID (cara yang dipakai project ini)
+
+Isi `.env` (lihat `.env.example`):
+
+```dotenv
+ICARE_FIREBASE_API_KEY=<Web API key>
+ICARE_FIREBASE_EMAIL=<email akun Firebase Auth dengan UID yang diizinkan rules>
+ICARE_FIREBASE_PASSWORD=<password akun tersebut>
+ICARE_DEFAULT_DEVICE_ID=ESP32_Gateway
+```
+
+Backend login ke Firebase Auth (email/password) di sisi server, menyimpan ID token di memori, lalu memperbaruinya otomatis dengan refresh token. Kredensial tidak pernah dikirim ke browser. `ICARE_DEFAULT_DEVICE_ID` membuat petak tanpa ID perangkat otomatis membaca perangkat tersebut sehingga data demo tidak tampil.
+
 Jika memakai rules yang membatasi UID, jangan aktifkan mode anonim: isi `ICARE_FIREBASE_AUTH_TOKEN` dengan Firebase ID token yang masih berlaku, atau gunakan pasangan API key dan refresh token dari akun dengan UID yang diizinkan.
 
 Tanpa akses baca Firebase atau ID perangkat tertaut, aplikasi memakai fixture lokal (75 cm, 85 L/mnt, dan 1,2 bar) serta simulasi pompa. Grafik historis 24 jam dan aktivitas belum dibaca dari Firebase. Kontrol pompa perangkat belum diaktifkan karena ekspor belum menunjukkan path perintah yang dibaca firmware. Sesi, akun, petak, dan sebagian aktivitas prototipe masih dikelola lokal; sesi berakhir saat server dimulai ulang. Prototipe ini tidak ditujukan untuk deployment produksi.
