@@ -6,6 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#28631f">
   <title>{{.Title}} · iCare</title>
+  <link rel="icon" type="image/png" href="/static/assets/icare-icon.png">
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body class="{{if .IsAuth}}auth-page{{end}}">
@@ -13,7 +14,7 @@
   <main class="auth-shell">
     <section class="auth-story" aria-label="Tentang iCare">
       <a class="brand brand-auth" href="/login" aria-label="iCare">
-        <span class="brand-mark">i</span><span>care</span>
+        <img class="brand-logo" src="/static/assets/icare-logo.png" alt="iCare">
       </a>
       <div class="story-copy">
         <p class="eyebrow">IRIGASI CERDAS · iCARE</p>
@@ -34,7 +35,7 @@
   <div class="app-shell">
     <aside class="sidebar">
       <a class="brand brand-sidebar" href="/" aria-label="iCare">
-        <span class="brand-mark">i</span><span>care</span>
+        <img class="brand-logo" src="/static/assets/icare-logo.png" alt="iCare">
       </a>
       <nav class="side-nav" aria-label="Navigasi utama">
         <a class="nav-link {{if eq .Active "Beranda"}}active{{end}}" href="/">Beranda</a>
@@ -58,7 +59,7 @@
     </aside>
     <main class="main-content">
       <header class="mobile-header">
-        <a class="brand brand-mobile" href="/" aria-label="iCare"><span class="brand-mark">i</span><span>care</span></a>
+        <a class="brand brand-mobile" href="/" aria-label="iCare"><img class="brand-logo" src="/static/assets/icare-logo.png" alt="iCare"></a>
         <span class="demo-label"><span class="status-dot"></span> {{if .FirebaseConnected}}Firebase terhubung{{else if .LinkedDeviceID}}Firebase offline{{else}}Data demo{{end}}</span>
       </header>
       {{template "content" .}}

@@ -1,4 +1,5 @@
 /.env
+/.env.example
 icare.db
 icare.db-shm
 icare.db-wal

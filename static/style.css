@@ -54,9 +54,10 @@ button { cursor: pointer; }
   text-decoration: none;
 }
 
-.brand-mark { color: #78ae3d; }
+.brand-logo { display: block; width: 168px; height: auto; }
 .brand-sidebar { margin: 8px 4px 42px; }
-.brand-mobile { font-size: 28px; padding: 5px 12px 7px 8px; }
+.brand-mobile { padding: 5px 12px 7px 8px; }
+.brand-mobile .brand-logo { width: 112px; }
 
 .side-nav { display: grid; gap: 8px; }
 .nav-link {
@@ -208,7 +209,8 @@ tbody tr:last-child td { border-bottom: 0; }
 .auth-page { min-height: 100vh; }
 .auth-shell { display: grid; min-height: 100vh; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
 .auth-story { display: flex; flex-direction: column; justify-content: center; padding: clamp(40px, 8vw, 120px); background: var(--green); color: #fff; }
-.brand-auth { font-size: clamp(44px, 5vw, 64px); border-radius: 8px; padding: 10px 22px 13px 14px; }
+.brand-auth { border-radius: 8px; padding: 10px 22px 13px 14px; }
+.brand-auth .brand-logo { width: 220px; }
 .story-copy { max-width: 600px; margin-top: clamp(40px, 7vh, 85px); }
 .story-copy .eyebrow { color: #d6e8cd; }
 .story-copy h1 { max-width: 600px; margin: 0; font-size: clamp(34px, 4.1vw, 58px); letter-spacing: -1.6px; line-height: 1.13; }
@@ -288,7 +290,8 @@ tbody tr:last-child td { border-bottom: 0; }
   .mobile-nav a.active { color: var(--green); }
   .auth-shell { display: block; min-height: 100vh; }
   .auth-story { min-height: auto; padding: 26px 24px 32px; border-radius: 0 0 10px 10px; }
-  .brand-auth { font-size: 34px; padding: 7px 15px 9px 10px; }
+  .brand-auth { padding: 7px 15px 9px 10px; }
+  .brand-auth .brand-logo { width: 180px; }
   .story-copy { margin-top: 26px; }
   .story-copy .eyebrow { margin-bottom: 6px; font-size: 9px; }
   .story-copy h1 { max-width: 470px; font-size: 28px; letter-spacing: -.6px; }
