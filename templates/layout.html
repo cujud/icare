@@ -50,7 +50,7 @@
         <span class="nav-link nav-link-placeholder" aria-disabled="true">Pengaturan</span>
       </nav>
       <div class="sidebar-footer">
-        <span class="demo-label"><span class="status-dot"></span> Simulasi lokal</span>
+        <span class="demo-label"><span class="status-dot"></span> {{if .FirebaseConnected}}Firebase terhubung{{else if .LinkedDeviceID}}Firebase offline{{else}}Simulasi lokal{{end}}</span>
         <form method="post" action="/logout">
           <button class="logout-button" type="submit">Keluar</button>
         </form>
@@ -59,7 +59,7 @@
     <main class="main-content">
       <header class="mobile-header">
         <a class="brand brand-mobile" href="/" aria-label="iCare"><span class="brand-mark">i</span><span>care</span></a>
-        <span class="demo-label"><span class="status-dot"></span> Data demo</span>
+        <span class="demo-label"><span class="status-dot"></span> {{if .FirebaseConnected}}Firebase terhubung{{else if .LinkedDeviceID}}Firebase offline{{else}}Data demo{{end}}</span>
       </header>
       {{template "content" .}}
     </main>

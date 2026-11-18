@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
@@ -72,28 +73,42 @@ type IrrigationState struct {
 }
 
 type PageData struct {
-	Title         string
-	Active        string
-	Petak         string
-	Petaks        []Plot
-	PlotName      string
-	DeviceID      string
-	IsAuth        bool
-	Error         string
-	UserName      string
-	UserEmail     string
-	Initials      string
-	Today         string
-	WaterLevel    float64
-	FlowRate      float64
-	FlowPercent   float64
-	Pressure      float64
-	PressureLabel string
-	PumpOn        bool
-	Mode          string
-	ModeLabel     string
-	ChartPoints   string
-	Events        []Activity
+	Title               string
+	Active              string
+	Petak               string
+	Petaks              []Plot
+	DeviceID            string
+	LinkedDeviceID      string
+	FirebaseConnected   bool
+	DeviceError         string
+	DeviceNode          string
+	DeviceFault         string
+	SensorStatus        string
+	SensorAvailable     bool
+	DistanceCM          float64
+	FlowCalibrated      bool
+	LoRaOnline          bool
+	SensorSeen          bool
+	PumpStatusAvailable bool
+	ConfigFresh         bool
+	ConfigReason        string
+	PlotName            string
+	IsAuth              bool
+	Error               string
+	UserName            string
+	UserEmail           string
+	Initials            string
+	Today               string
+	WaterLevel          float64
+	FlowRate            float64
+	FlowPercent         float64
+	Pressure            float64
+	PressureLabel       string
+	PumpOn              bool
+	Mode                string
+	ModeLabel           string
+	ChartPoints         string
+	Events              []Activity
 }
 
 type App struct {
@@ -103,6 +118,7 @@ type App struct {
 	sessions  map[string]Session
 	db        *sql.DB
 	state     IrrigationState
+	firebase  *firebaseRTDB
 }
 
 func newApp() (*App, error) {
@@ -133,6 +149,14 @@ func newApp() (*App, error) {
 }
 
 func newAppWithDB(db *sql.DB) (*App, error) {
+	firebase, err := newFirebaseRTDBFromEnv()
+	if err != nil {
+		return nil, err
+	}
+	return newAppWithDBAndFirebase(db, firebase)
+}
+
+func newAppWithDBAndFirebase(db *sql.DB, firebase *firebaseRTDB) (*App, error) {
 	staticFiles, err := fs.Sub(assets, "static")
 	if err != nil {
 		return nil, fmt.Errorf("load static assets: %w", err)
@@ -143,6 +167,7 @@ func newAppWithDB(db *sql.DB) (*App, error) {
 		templates: make(map[string]*template.Template),
 		sessions:  make(map[string]Session),
 		db:        db,
+		firebase:  firebase,
 		state: IrrigationState{
 			WaterLevel: 75,
 			FlowRate:   85,
@@ -242,6 +267,7 @@ func (a *App) dashboard(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	a.loadDeviceData(r.Context(), &data)
 	a.render(w, "dashboard", data)
 }
 
@@ -438,6 +464,7 @@ func (a *App) devices(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	a.loadDeviceData(r.Context(), &data)
 	a.render(w, "devices", data)
 }
 
@@ -511,7 +538,8 @@ func (a *App) addPlot(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) setPumpMode(w http.ResponseWriter, r *http.Request) {
-	if _, ok := a.requireUser(w, r); !ok {
+	user, ok := a.requireUser(w, r)
+	if !ok {
 		return
 	}
 	if err := r.ParseForm(); err != nil {
@@ -521,6 +549,17 @@ func (a *App) setPumpMode(w http.ResponseWriter, r *http.Request) {
 	mode := r.FormValue("mode")
 	if mode != "auto" && mode != "manual" {
 		http.Error(w, "Mode pompa tidak valid.", http.StatusBadRequest)
+		return
+	}
+	if _, hasDevice, err := a.selectedDevicePlot(user, r); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			http.NotFound(w, r)
+			return
+		}
+		http.Error(w, "Petak tidak dapat diperiksa.", http.StatusInternalServerError)
+		return
+	} else if hasDevice {
+		http.Error(w, "Skema perintah pompa belum tersedia pada data perangkat Firebase.", http.StatusNotImplemented)
 		return
 	}
 
@@ -538,7 +577,19 @@ func (a *App) setPumpMode(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) togglePump(w http.ResponseWriter, r *http.Request) {
-	if _, ok := a.requireUser(w, r); !ok {
+	user, ok := a.requireUser(w, r)
+	if !ok {
+		return
+	}
+	if _, hasDevice, err := a.selectedDevicePlot(user, r); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			http.NotFound(w, r)
+			return
+		}
+		http.Error(w, "Petak tidak dapat diperiksa.", http.StatusInternalServerError)
+		return
+	} else if hasDevice {
+		http.Error(w, "Skema perintah pompa belum tersedia pada data perangkat Firebase.", http.StatusNotImplemented)
 		return
 	}
 	a.mu.Lock()
@@ -661,6 +712,81 @@ func (a *App) pageData(user User, active string) (PageData, error) {
 		data.Petak = plots[0].Name
 	}
 	return data, nil
+}
+
+func (a *App) loadDeviceData(ctx context.Context, data *PageData) {
+	plot := findPlot(data.Petaks, data.Petak)
+	if plot.DeviceID == "" {
+		return
+	}
+	data.LinkedDeviceID = plot.DeviceID
+	if a.firebase == nil || !a.firebase.ready() {
+		data.DeviceError = "Akses Firebase membutuhkan token autentikasi; data perangkat tidak tersedia."
+		return
+	}
+	snapshot, err := a.firebase.getDevice(ctx, plot.DeviceID)
+	if err != nil {
+		log.Printf("read Firebase device %q: %v", plot.DeviceID, err)
+		data.DeviceError = "Data perangkat tidak dapat dimuat dari Firebase. Periksa token dan rules Realtime Database."
+		return
+	}
+	data.FirebaseConnected = true
+	latest := snapshot.Latest
+	data.DeviceNode = latest.Node
+	data.DeviceFault = latest.Fault
+	data.SensorStatus = latest.UltrasonicStatus
+	data.FlowCalibrated = latest.FlowCalibrated
+	data.LoRaOnline = latest.LoRaOnline
+	data.SensorSeen = latest.SensorSeen
+	if latest.DistanceCM != nil && *latest.DistanceCM >= 0 && latest.SensorSeen && latest.UltrasonicValid && latest.UltrasonicFresh {
+		data.SensorAvailable = true
+		data.DistanceCM = *latest.DistanceCM
+	}
+	if latest.RelayOn != nil {
+		data.PumpOn = *latest.RelayOn
+		data.PumpStatusAvailable = true
+	} else if snapshot.Reported != nil && snapshot.Reported.RelayOn != nil {
+		data.PumpOn = *snapshot.Reported.RelayOn
+		data.PumpStatusAvailable = true
+	}
+	data.ModeLabel = "Tidak tersedia"
+	if snapshot.Reported != nil {
+		data.ConfigFresh = snapshot.Reported.ConfigFresh
+		data.ConfigReason = snapshot.Reported.Reason
+	}
+	data.ChartPoints = ""
+	data.Events = nil
+}
+
+func findPlot(plots []Plot, name string) Plot {
+	for _, plot := range plots {
+		if plot.Name == name {
+			return plot
+		}
+	}
+	return Plot{}
+}
+
+func (a *App) selectedDevicePlot(user User, r *http.Request) (Plot, bool, error) {
+	plots, err := a.listPlots(user.Email)
+	if err != nil {
+		return Plot{}, false, err
+	}
+	selected := r.FormValue("petak")
+	if selected == "" {
+		selected = r.URL.Query().Get("petak")
+	}
+	if selected != "" {
+		plot := findPlot(plots, selected)
+		if plot.Name == "" {
+			return Plot{}, false, sql.ErrNoRows
+		}
+		return plot, plot.DeviceID != "", nil
+	}
+	if len(plots) == 0 {
+		return Plot{}, false, nil
+	}
+	return plots[0], plots[0].DeviceID != "", nil
 }
 
 func (a *App) getUser(email string) (User, error) {
@@ -849,6 +975,9 @@ func indonesianDate(now time.Time) string {
 }
 
 func main() {
+	if err := loadDotEnv(); err != nil {
+		log.Fatal(err)
+	}
 	app, err := newApp()
 	if err != nil {
 		log.Fatal(err)
@@ -856,7 +985,7 @@ func main() {
 
 	address := strings.TrimSpace(os.Getenv("ICARE_ADDR"))
 	if address == "" {
-		address = "0.0.0.0:8080"
+		address = "0.0.0.0:18081"
 	}
 	server := &http.Server{
 		Addr:              address,

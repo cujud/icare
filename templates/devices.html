@@ -5,29 +5,31 @@
     <h1>Perangkat</h1>
     <p class="muted">Status perangkat untuk Sawah · {{.Petak}}.</p>
   </div>
-  <span class="status-pill"><span class="status-dot"></span> Simulasi lokal</span>
+  <span class="status-pill"><span class="status-dot"></span> {{if .FirebaseConnected}}Terhubung ke Firebase{{else if .LinkedDeviceID}}Firebase tidak terhubung{{else}}Simulasi lokal{{end}}</span>
 </div>
+{{if .DeviceError}}<p class="alert" role="alert">{{.DeviceError}}</p>{{end}}
 <section class="device-grid">
   <article class="card device-card">
     <span class="device-icon" aria-hidden="true">01</span>
     <div><p class="eyebrow">SENSOR KETINGGIAN &amp; DEBIT</p><h2>Sensor sawah</h2></div>
-    <span class="device-state">Belum terhubung</span>
-    <p class="muted">Nilai 75 cm dan 85 L/mnt di dashboard adalah data contoh dari rancangan PDF, bukan pembacaan sensor.</p>
+    <span class="device-state">{{if .FirebaseConnected}}{{if .SensorAvailable}}Siap{{else if .SensorSeen}}Data tidak fresh{{else}}Belum ada data sensor{{end}}{{else if .LinkedDeviceID}}Tidak terhubung{{else}}Belum ditautkan{{end}}</span>
+    <p class="muted">{{if .FirebaseConnected}}Firebase terhubung ke {{.LinkedDeviceID}}. Status sensor: {{.DeviceFault}} · {{.SensorStatus}}.{{else if .LinkedDeviceID}}ID perangkat {{.LinkedDeviceID}} tersimpan, tetapi pembacaan sensor tidak tersedia.{{else}}Tambahkan ID perangkat Firebase pada petak di Beranda untuk menghubungkan sensor.{{end}}</p>
   </article>
   <article class="card device-card">
     <span class="device-icon" aria-hidden="true">02</span>
     <div><p class="eyebrow">KONTROL IRIGASI</p><h2>Pompa air</h2></div>
-    <span class="device-state">Simulasi {{if .PumpOn}}aktif{{else}}mati{{end}}</span>
-    <p class="muted">Tombol kontrol hanya mengubah status simulasi. Integrasi perangkat ESP32 atau MQTT belum dikonfigurasi.</p>
+    <span class="device-state">{{if and .FirebaseConnected .PumpStatusAvailable}}{{if .PumpOn}}Aktif{{else}}Mati{{end}}{{else if .LinkedDeviceID}}Tidak tersedia{{else}}Simulasi{{end}}</span>
+    <p class="muted">{{if .FirebaseConnected}}Status dibaca dari <code>latest.relay_on</code>. Kontrol belum dapat diaktifkan karena ekspor tidak memuat jalur perintah yang dibaca firmware.{{else if .LinkedDeviceID}}Periksa token akses dan rules Realtime Database.{{else}}Status masih berupa simulasi lokal; tautkan ID perangkat untuk menggunakan Firebase.{{end}}</p>
   </article>
 </section>
 <section class="card connection-card">
   <h2>Hubungkan perangkat</h2>
-  <p class="muted">Agar data dan perintah pompa berasal dari perangkat nyata, tentukan protokol dan endpoint IoT yang digunakan sebelum integrasi.</p>
+  <p class="muted">{{if .FirebaseConnected}}Snapshot terbaru dimuat dari <code>devices/{{.LinkedDeviceID}}</code>. Debit belum dikirim{{if not .FlowCalibrated}} dan sensor debit belum dikalibrasi{{end}}; tekanan air tidak ada pada snapshot.{{else if .LinkedDeviceID}}Perangkat menggunakan path Realtime Database <code>devices/{{.LinkedDeviceID}}</code>.{{else}}Hubungkan petak dengan mengisi ID perangkat Firebase pada formulir di Beranda.{{end}}</p>
   <div class="connection-details">
     <div><span class="detail-label">Lokasi</span><strong>Sawah · {{.Petak}}</strong></div>
-    <div><span class="detail-label">Mode saat ini</span><strong>{{.ModeLabel}}</strong></div>
-    <div><span class="detail-label">Status data</span><strong>Fixture lokal</strong></div>
+    <div><span class="detail-label">Status LoRa</span><strong>{{if .LoRaOnline}}Online{{else}}Offline{{end}}</strong></div>
+    <div><span class="detail-label">Konfigurasi perangkat</span><strong>{{if .ConfigFresh}}Diterima{{else if .ConfigReason}}{{.ConfigReason}}{{else}}Tidak tersedia{{end}}</strong></div>
+    <div><span class="detail-label">Status data</span><strong>{{if .FirebaseConnected}}Firebase Realtime Database{{else if .LinkedDeviceID}}Koneksi gagal{{else}}Fixture lokal{{end}}</strong></div>
   </div>
 </section>
 {{end}}
