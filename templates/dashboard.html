@@ -3,10 +3,38 @@
   <div>
     <p class="eyebrow">DASHBOARD · DATA DEMO</p>
     <h1>Halo, {{.UserName}}</h1>
-    <p class="muted">{{.Today}} <span class="separator">·</span> Sawah Blok A</p>
+    <p class="muted">{{.Today}} <span class="separator">·</span> Sawah · {{.Petak}}</p>
   </div>
   <span class="status-pill"><span class="status-dot"></span> Data sensor contoh</span>
 </div>
+
+<nav class="plot-tabs" aria-label="Pilih petak">
+  {{range .Petaks}}
+  <a class="plot-tab {{if eq $.Petak .Name}}active{{end}}" href="/?petak={{.Name}}" {{if eq $.Petak .Name}}aria-current="page"{{end}}>{{.Name}}</a>
+  {{end}}
+</nav>
+{{if .Error}}<p class="alert" role="alert">{{.Error}}</p>{{end}}
+<p class="plot-note">
+  {{if .Petak}}
+    {{range .Petaks}}{{if eq $.Petak .Name}}{{if .DeviceID}}ID perangkat tersimpan: {{.DeviceID}}{{else}}Petak ini belum ditautkan ke perangkat Firebase.{{end}}{{end}}{{end}}
+  {{else}}
+    Belum ada petak. Tambahkan petak untuk memulai.
+  {{end}}
+  Nilai sensor di bawah masih data simulasi lokal.
+</p>
+<section class="card plot-management">
+  <form method="post" action="/plots" class="plot-form">
+    <label>
+      Nama petak
+      <input name="name" value="{{.PlotName}}" placeholder="Contoh: Petak B" maxlength="50" required>
+    </label>
+    <label>
+      ID perangkat Firebase <span class="muted">(opsional)</span>
+      <input name="device_id" value="{{.DeviceID}}" placeholder="Isi setelah perangkat terdaftar di Firebase" maxlength="128">
+    </label>
+    <button class="button button-primary" type="submit">Tambah petak</button>
+  </form>
+</section>
 
 <section class="metric-grid" aria-label="Ringkasan kondisi sawah">
   <article class="card metric-card">

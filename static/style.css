@@ -60,6 +60,7 @@ button { cursor: pointer; }
 
 .side-nav { display: grid; gap: 8px; }
 .nav-link {
+  display: block;
   border-radius: 6px;
   color: rgba(255,255,255,.92);
   font-size: 16px;
@@ -69,6 +70,9 @@ button { cursor: pointer; }
   transition: background .15s ease;
 }
 .nav-link:hover, .nav-link.active { background: rgba(255,255,255,.16); }
+.nav-section-label { margin: 20px 16px 0; color: rgba(255,255,255,.62); font-size: 10px; font-weight: 750; letter-spacing: .12em; }
+.nav-link-placeholder { color: rgba(255,255,255,.62); cursor: default; }
+.nav-link-placeholder:hover { background: rgba(255,255,255,.12); color: #fff; }
 
 .sidebar-footer {
   display: grid;
@@ -108,6 +112,17 @@ button { cursor: pointer; }
   padding: 10px 15px;
   white-space: nowrap;
 }
+
+.plot-tabs { display: flex; gap: 8px; margin: 0 0 10px; }
+.plot-tab { border: 1px solid var(--line); border-radius: 6px; background: #fff; color: var(--muted); font-size: 14px; font-weight: 650; padding: 10px 18px; text-decoration: none; transition: background .15s ease, color .15s ease, border-color .15s ease; }
+.plot-tab:hover, .plot-tab.active { border-color: var(--green); background: var(--green); color: #fff; }
+.plot-note { margin: 0 0 20px; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.plot-management { margin-bottom: 18px; padding: 16px; }
+.plot-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)) auto; align-items: end; gap: 12px; }
+.plot-form label { display: grid; gap: 7px; color: var(--ink); font-size: 12px; font-weight: 650; }
+.plot-form input { width: 100%; min-height: 44px; border: 1px solid #d5dccf; border-radius: 6px; outline: 0; background: #fff; color: var(--ink); padding: 0 12px; }
+.plot-form input:focus { border-color: var(--green); box-shadow: 0 0 0 3px rgba(40,99,31,.12); }
+.plot-form .button { min-height: 44px; white-space: nowrap; }
 
 .metric-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; }
 .card {
@@ -245,6 +260,10 @@ tbody tr:last-child td { border-bottom: 0; }
   .page-heading .eyebrow { font-size: 9px; }
   .page-heading > .status-pill { font-size: 0; padding: 11px; }
   .page-heading > .status-pill .status-dot { width: 9px; }
+  .plot-tabs { gap: 6px; }
+  .plot-tab { flex: 1; padding-inline: 8px; text-align: center; }
+  .plot-form { grid-template-columns: 1fr; }
+  .plot-form .button { width: 100%; }
   .metric-grid { gap: 10px; }
   .metric-card { min-height: 142px; padding: 17px 15px 15px; border-radius: 8px; }
   .metric-label { font-size: 12px; }

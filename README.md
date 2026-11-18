@@ -15,10 +15,13 @@ Buka `http://127.0.0.1:8080`, lalu buat akun dari halaman **Daftar gratis**. Sec
 - Halaman masuk dan pendaftaran dengan validasi formulir serta kata sandi yang di-hash.
 - Dashboard berisi data contoh ketinggian air, debit, tekanan, grafik 24 jam, status pompa, dan aktivitas.
 - Navigasi Beranda, Riwayat, Perangkat, dan Profil.
+- Petak dapat ditambahkan manual dari dashboard dan disimpan bersama ID perangkat Firebase opsional.
+- Akun dan data petak disimpan di SQLite (`icare.db` secara default); lokasi file dapat diubah dengan `ICARE_DB_PATH`.
+- Tab Notifikasi dan Pengaturan pada sidebar adalah placeholder visual dengan efek hover.
 - Kontrol mode Otomatis/Manual serta tombol pompa yang memperbarui status simulasi dan riwayat.
 - Tampilan responsif untuk desktop dan ponsel.
 
-Data sensor awal mengikuti angka dalam PDF (75 cm, 85 L/mnt, dan 1,2 bar). Nilainya adalah fixture lokal, bukan pembacaan perangkat. Kontrol pompa hanya mengubah simulasi dalam memori; belum ada integrasi ESP32, MQTT, atau perangkat fisik. Akun, sesi, dan aktivitas juga disimpan di memori dan terhapus saat server dimulai ulang. Prototipe ini tidak ditujukan untuk deployment produksi.
+Data sensor awal mengikuti angka dalam PDF (75 cm, 85 L/mnt, dan 1,2 bar). Nilainya adalah fixture lokal, bukan pembacaan perangkat. ID Firebase dapat disimpan saat membuat petak, tetapi pembacaan perangkat dan kontrol pompa belum terhubung ke Firebase. Kontrol pompa, sesi, dan aktivitas masih disimpan di memori; sesi berakhir saat server dimulai ulang. Prototipe ini tidak ditujukan untuk deployment produksi.
 
 ## Pemeriksaan
 

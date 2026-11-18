@@ -41,6 +41,13 @@
         <a class="nav-link {{if eq .Active "Riwayat"}}active{{end}}" href="/history">Riwayat</a>
         <a class="nav-link {{if eq .Active "Perangkat"}}active{{end}}" href="/devices">Perangkat</a>
         <a class="nav-link {{if eq .Active "Profil"}}active{{end}}" href="/profile">Profil</a>
+        <p class="nav-section-label">PETAK</p>
+        {{range .Petaks}}
+        <a class="nav-link {{if and (eq $.Active "Beranda") (eq $.Petak .Name)}}active{{end}}" href="/?petak={{.Name}}">{{.Name}}</a>
+        {{end}}
+        <p class="nav-section-label">LAINNYA</p>
+        <span class="nav-link nav-link-placeholder" aria-disabled="true">Notifikasi</span>
+        <span class="nav-link nav-link-placeholder" aria-disabled="true">Pengaturan</span>
       </nav>
       <div class="sidebar-footer">
         <span class="demo-label"><span class="status-dot"></span> Simulasi lokal</span>

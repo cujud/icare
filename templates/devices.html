@@ -3,7 +3,7 @@
   <div>
     <p class="eyebrow">KONEKTIVITAS</p>
     <h1>Perangkat</h1>
-    <p class="muted">Status perangkat untuk Sawah Blok A.</p>
+    <p class="muted">Status perangkat untuk Sawah · {{.Petak}}.</p>
   </div>
   <span class="status-pill"><span class="status-dot"></span> Simulasi lokal</span>
 </div>
@@ -25,7 +25,7 @@
   <h2>Hubungkan perangkat</h2>
   <p class="muted">Agar data dan perintah pompa berasal dari perangkat nyata, tentukan protokol dan endpoint IoT yang digunakan sebelum integrasi.</p>
   <div class="connection-details">
-    <div><span class="detail-label">Lokasi</span><strong>Sawah Blok A</strong></div>
+    <div><span class="detail-label">Lokasi</span><strong>Sawah · {{.Petak}}</strong></div>
     <div><span class="detail-label">Mode saat ini</span><strong>{{.ModeLabel}}</strong></div>
     <div><span class="detail-label">Status data</span><strong>Fixture lokal</strong></div>
   </div>

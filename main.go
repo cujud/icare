@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
+	"database/sql"
 	"embed"
 	"encoding/binary"
 	"encoding/hex"
@@ -16,12 +17,16 @@ import (
 	"log"
 	"net/http"
 	"net/mail"
+	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
+
+	_ "modernc.org/sqlite"
 )
 
 //go:embed templates/*.html static/*
@@ -52,6 +57,11 @@ type Activity struct {
 	Mode        string
 }
 
+type Plot struct {
+	Name     string
+	DeviceID string
+}
+
 type IrrigationState struct {
 	WaterLevel float64
 	FlowRate   float64
@@ -64,6 +74,10 @@ type IrrigationState struct {
 type PageData struct {
 	Title         string
 	Active        string
+	Petak         string
+	Petaks        []Plot
+	PlotName      string
+	DeviceID      string
 	IsAuth        bool
 	Error         string
 	UserName      string
@@ -86,12 +100,39 @@ type App struct {
 	mux       *http.ServeMux
 	templates map[string]*template.Template
 	mu        sync.Mutex
-	users     map[string]User
 	sessions  map[string]Session
+	db        *sql.DB
 	state     IrrigationState
 }
 
 func newApp() (*App, error) {
+	dbPath := strings.TrimSpace(os.Getenv("ICARE_DB_PATH"))
+	if dbPath == "" {
+		dbPath = "icare.db"
+	}
+	if dbPath != ":memory:" {
+		if err := os.MkdirAll(filepath.Dir(dbPath), 0700); err != nil {
+			return nil, fmt.Errorf("create database directory: %w", err)
+		}
+	}
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		return nil, fmt.Errorf("open database: %w", err)
+	}
+	db.SetMaxOpenConns(1)
+	if err := initializeDatabase(db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	app, err := newAppWithDB(db)
+	if err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	return app, nil
+}
+
+func newAppWithDB(db *sql.DB) (*App, error) {
 	staticFiles, err := fs.Sub(assets, "static")
 	if err != nil {
 		return nil, fmt.Errorf("load static assets: %w", err)
@@ -100,8 +141,8 @@ func newApp() (*App, error) {
 	app := &App{
 		mux:       http.NewServeMux(),
 		templates: make(map[string]*template.Template),
-		users:     make(map[string]User),
 		sessions:  make(map[string]Session),
+		db:        db,
 		state: IrrigationState{
 			WaterLevel: 75,
 			FlowRate:   85,
@@ -143,10 +184,39 @@ func newApp() (*App, error) {
 	app.mux.HandleFunc("GET /history", app.history)
 	app.mux.HandleFunc("GET /devices", app.devices)
 	app.mux.HandleFunc("GET /profile", app.profile)
+	app.mux.HandleFunc("POST /plots", app.addPlot)
 	app.mux.HandleFunc("POST /pump/mode", app.setPumpMode)
 	app.mux.HandleFunc("POST /pump/toggle", app.togglePump)
 
 	return app, nil
+}
+
+func initializeDatabase(db *sql.DB) error {
+	const schema = `
+CREATE TABLE IF NOT EXISTS users (
+	email TEXT PRIMARY KEY,
+	name TEXT NOT NULL,
+	phone TEXT NOT NULL,
+	password_salt BLOB NOT NULL,
+	password_hash BLOB NOT NULL,
+	created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS petaks (
+	id INTEGER PRIMARY KEY,
+	user_email TEXT NOT NULL REFERENCES users(email) ON DELETE CASCADE,
+	name TEXT NOT NULL,
+	device_id TEXT NOT NULL DEFAULT '',
+	created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	UNIQUE(user_email, name)
+);
+`
+	if _, err := db.Exec("PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;"); err != nil {
+		return fmt.Errorf("configure SQLite: %w", err)
+	}
+	if _, err := db.Exec(schema); err != nil {
+		return fmt.Errorf("initialize SQLite schema: %w", err)
+	}
+	return nil
 }
 
 func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -163,11 +233,25 @@ func (a *App) dashboard(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	a.render(w, "dashboard", a.pageData(user, "Beranda"))
+	data, err := a.pageData(user, "Beranda")
+	if err != nil {
+		http.Error(w, "Data petak tidak dapat dimuat.", http.StatusInternalServerError)
+		return
+	}
+	if !selectPetak(&data, r.URL.Query().Get("petak")) {
+		http.NotFound(w, r)
+		return
+	}
+	a.render(w, "dashboard", data)
 }
 
 func (a *App) loginPage(w http.ResponseWriter, r *http.Request) {
-	if _, ok := a.currentUser(r); ok {
+	_, ok, err := a.currentUser(r)
+	if err != nil {
+		http.Error(w, "Akun tidak dapat diperiksa. Coba lagi.", http.StatusInternalServerError)
+		return
+	}
+	if ok {
 		http.Redirect(w, r, "/", http.StatusSeeOther)
 		return
 	}
@@ -182,9 +266,12 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) {
 
 	email := normalizeEmail(r.FormValue("email"))
 	password := r.FormValue("password")
-	a.mu.Lock()
-	user, exists := a.users[email]
-	a.mu.Unlock()
+	user, err := a.getUser(email)
+	exists := err == nil
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		http.Error(w, "Akun tidak dapat diperiksa. Coba lagi.", http.StatusInternalServerError)
+		return
+	}
 	if !exists || !checkPassword(user.PasswordSalt, user.PasswordHash, password) {
 		a.render(w, "login", PageData{
 			Title:  "Masuk",
@@ -202,7 +289,12 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) registerPage(w http.ResponseWriter, r *http.Request) {
-	if _, ok := a.currentUser(r); ok {
+	_, ok, err := a.currentUser(r)
+	if err != nil {
+		http.Error(w, "Akun tidak dapat diperiksa. Coba lagi.", http.StatusInternalServerError)
+		return
+	}
+	if ok {
 		http.Redirect(w, r, "/", http.StatusSeeOther)
 		return
 	}
@@ -255,14 +347,40 @@ func (a *App) register(w http.ResponseWriter, r *http.Request) {
 		PasswordHash: pbkdf2SHA256([]byte(password), salt, passwordRounds, sha256.Size),
 	}
 
-	a.mu.Lock()
-	if _, exists := a.users[email]; exists {
-		a.mu.Unlock()
+	tx, err := a.db.Begin()
+	if err != nil {
+		http.Error(w, "Akun tidak dapat dibuat. Coba lagi.", http.StatusInternalServerError)
+		return
+	}
+	result, err := tx.Exec(
+		"INSERT INTO users (email, name, phone, password_salt, password_hash) VALUES (?, ?, ?, ?, ?) ON CONFLICT(email) DO NOTHING",
+		user.Email, user.Name, user.Phone, user.PasswordSalt, user.PasswordHash,
+	)
+	if err != nil {
+		_ = tx.Rollback()
+		http.Error(w, "Akun tidak dapat dibuat. Coba lagi.", http.StatusInternalServerError)
+		return
+	}
+	inserted, err := result.RowsAffected()
+	if err != nil {
+		_ = tx.Rollback()
+		http.Error(w, "Akun tidak dapat dibuat. Coba lagi.", http.StatusInternalServerError)
+		return
+	}
+	if inserted == 0 {
+		_ = tx.Rollback()
 		a.render(w, "register", PageData{Title: "Buat akun", IsAuth: true, Error: "Email ini sudah terdaftar."})
 		return
 	}
-	a.users[email] = user
-	a.mu.Unlock()
+	if _, err := tx.Exec("INSERT INTO petaks (user_email, name) VALUES (?, ?)", email, "Petak A"); err != nil {
+		_ = tx.Rollback()
+		http.Error(w, "Petak awal tidak dapat dibuat. Coba lagi.", http.StatusInternalServerError)
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		http.Error(w, "Akun tidak dapat dibuat. Coba lagi.", http.StatusInternalServerError)
+		return
+	}
 
 	if err := a.startSession(w, r, email); err != nil {
 		http.Error(w, "Akun dibuat, tetapi sesi tidak dapat dimulai. Silakan masuk.", http.StatusInternalServerError)
@@ -294,7 +412,16 @@ func (a *App) history(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	a.render(w, "history", a.pageData(user, "Riwayat"))
+	data, err := a.pageData(user, "Riwayat")
+	if err != nil {
+		http.Error(w, "Data petak tidak dapat dimuat.", http.StatusInternalServerError)
+		return
+	}
+	if !selectPetak(&data, r.URL.Query().Get("petak")) {
+		http.NotFound(w, r)
+		return
+	}
+	a.render(w, "history", data)
 }
 
 func (a *App) devices(w http.ResponseWriter, r *http.Request) {
@@ -302,7 +429,16 @@ func (a *App) devices(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	a.render(w, "devices", a.pageData(user, "Perangkat"))
+	data, err := a.pageData(user, "Perangkat")
+	if err != nil {
+		http.Error(w, "Data petak tidak dapat dimuat.", http.StatusInternalServerError)
+		return
+	}
+	if !selectPetak(&data, r.URL.Query().Get("petak")) {
+		http.NotFound(w, r)
+		return
+	}
+	a.render(w, "devices", data)
 }
 
 func (a *App) profile(w http.ResponseWriter, r *http.Request) {
@@ -310,7 +446,68 @@ func (a *App) profile(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	a.render(w, "profile", a.pageData(user, "Profil"))
+	data, err := a.pageData(user, "Profil")
+	if err != nil {
+		http.Error(w, "Data petak tidak dapat dimuat.", http.StatusInternalServerError)
+		return
+	}
+	a.render(w, "profile", data)
+}
+
+func (a *App) addPlot(w http.ResponseWriter, r *http.Request) {
+	user, ok := a.requireUser(w, r)
+	if !ok {
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "Form tidak dapat dibaca.", http.StatusBadRequest)
+		return
+	}
+	name := strings.TrimSpace(r.FormValue("name"))
+	deviceID := strings.TrimSpace(r.FormValue("device_id"))
+	if name == "" || !utf8.ValidString(name) || len(name) > 50 || len(deviceID) > 128 {
+		data, err := a.pageData(user, "Beranda")
+		if err != nil {
+			http.Error(w, "Data petak tidak dapat dimuat.", http.StatusInternalServerError)
+			return
+		}
+		data.Error = "Nama petak wajib diisi (maksimal 50 karakter); ID perangkat maksimal 128 karakter."
+		data.PlotName = name
+		data.DeviceID = deviceID
+		if selected := r.FormValue("petak"); selected != "" {
+			_ = selectPetak(&data, selected)
+		}
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		a.render(w, "dashboard", data)
+		return
+	}
+	result, err := a.db.Exec(
+		"INSERT INTO petaks (user_email, name, device_id) VALUES (?, ?, ?) ON CONFLICT(user_email, name) DO NOTHING",
+		user.Email, name, deviceID,
+	)
+	if err != nil {
+		http.Error(w, "Petak tidak dapat disimpan. Coba lagi.", http.StatusInternalServerError)
+		return
+	}
+	inserted, err := result.RowsAffected()
+	if err != nil {
+		http.Error(w, "Petak tidak dapat disimpan. Coba lagi.", http.StatusInternalServerError)
+		return
+	}
+	if inserted == 0 {
+		data, err := a.pageData(user, "Beranda")
+		if err != nil {
+			http.Error(w, "Data petak tidak dapat dimuat.", http.StatusInternalServerError)
+			return
+		}
+		data.Error = "Nama petak tersebut sudah digunakan."
+		data.PlotName = name
+		data.DeviceID = deviceID
+		w.WriteHeader(http.StatusConflict)
+		a.render(w, "dashboard", data)
+		return
+	}
+	http.Redirect(w, r, "/?petak="+url.QueryEscape(name), http.StatusSeeOther)
 }
 
 func (a *App) setPumpMode(w http.ResponseWriter, r *http.Request) {
@@ -355,10 +552,10 @@ func (a *App) togglePump(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
-func (a *App) currentUser(r *http.Request) (User, bool) {
+func (a *App) currentUser(r *http.Request) (User, bool, error) {
 	cookie, err := r.Cookie(sessionCookieName)
 	if err != nil {
-		return User{}, false
+		return User{}, false, nil
 	}
 
 	a.mu.Lock()
@@ -366,18 +563,25 @@ func (a *App) currentUser(r *http.Request) (User, bool) {
 	if !exists || time.Now().After(session.ExpiresAt) {
 		delete(a.sessions, cookie.Value)
 		a.mu.Unlock()
-		return User{}, false
+		return User{}, false, nil
 	}
-	user, exists := a.users[session.Email]
 	a.mu.Unlock()
-	if !exists {
-		return User{}, false
+	user, err := a.getUser(session.Email)
+	if errors.Is(err, sql.ErrNoRows) {
+		return User{}, false, nil
 	}
-	return user, true
+	if err != nil {
+		return User{}, false, err
+	}
+	return user, true, nil
 }
 
 func (a *App) requireUser(w http.ResponseWriter, r *http.Request) (User, bool) {
-	user, ok := a.currentUser(r)
+	user, ok, err := a.currentUser(r)
+	if err != nil {
+		http.Error(w, "Akun tidak dapat diperiksa. Coba lagi.", http.StatusInternalServerError)
+		return User{}, false
+	}
 	if !ok {
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return User{}, false
@@ -416,19 +620,24 @@ func (a *App) startSession(w http.ResponseWriter, r *http.Request, email string)
 	return nil
 }
 
-func (a *App) pageData(user User, active string) PageData {
+func (a *App) pageData(user User, active string) (PageData, error) {
 	a.mu.Lock()
 	state := a.state
 	events := append([]Activity(nil), state.Events...)
 	a.mu.Unlock()
+	plots, err := a.listPlots(user.Email)
+	if err != nil {
+		return PageData{}, err
+	}
 
 	name := user.Name
 	if name == "" {
 		name = "User"
 	}
-	return PageData{
+	data := PageData{
 		Title:       active,
 		Active:      active,
+		Petaks:      plots,
 		UserName:    name,
 		UserEmail:   user.Email,
 		Initials:    initials(name),
@@ -448,6 +657,52 @@ func (a *App) pageData(user User, active string) PageData {
 		ChartPoints: makeChartPoints([]float64{43, 58, 74, 64, 87, 93, 81, 100, 96, state.WaterLevel}),
 		Events:      events,
 	}
+	if len(plots) > 0 {
+		data.Petak = plots[0].Name
+	}
+	return data, nil
+}
+
+func (a *App) getUser(email string) (User, error) {
+	var user User
+	err := a.db.QueryRow(
+		"SELECT name, email, phone, password_salt, password_hash FROM users WHERE email = ?",
+		email,
+	).Scan(&user.Name, &user.Email, &user.Phone, &user.PasswordSalt, &user.PasswordHash)
+	return user, err
+}
+
+func (a *App) listPlots(email string) ([]Plot, error) {
+	rows, err := a.db.Query("SELECT name, device_id FROM petaks WHERE user_email = ? ORDER BY id", email)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var plots []Plot
+	for rows.Next() {
+		var plot Plot
+		if err := rows.Scan(&plot.Name, &plot.DeviceID); err != nil {
+			return nil, err
+		}
+		plots = append(plots, plot)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return plots, nil
+}
+
+func selectPetak(data *PageData, name string) bool {
+	if name == "" {
+		return true
+	}
+	for _, plot := range data.Petaks {
+		if plot.Name == name {
+			data.Petak = name
+			return true
+		}
+	}
+	return false
 }
 
 func (a *App) applyAutomaticControlLocked() {
