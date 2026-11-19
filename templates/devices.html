@@ -19,12 +19,12 @@
     <span class="device-icon" aria-hidden="true">02</span>
     <div><p class="eyebrow">KONTROL IRIGASI</p><h2>Pompa air</h2></div>
     <span class="device-state">{{if and .FirebaseConnected .PumpStatusAvailable}}{{if .PumpOn}}Aktif{{else}}Mati{{end}}{{else if .LinkedDeviceID}}Tidak tersedia{{else}}Simulasi{{end}}</span>
-    <p class="muted">{{if .FirebaseConnected}}Status dibaca dari <code>latest.relay_on</code>. Kontrol belum dapat diaktifkan karena ekspor tidak memuat jalur perintah yang dibaca firmware.{{else if .LinkedDeviceID}}Periksa token akses dan rules Realtime Database.{{else}}Status masih berupa simulasi lokal; tautkan ID perangkat untuk menggunakan Firebase.{{end}}</p>
+    <p class="muted">{{if .FirebaseConnected}}Status dibaca dari <code>data_terkini.pompa_menyala</code> atau <code>status_pompa.pompa_menyala</code>. Kontrol belum dapat diaktifkan karena ekspor tidak memuat jalur perintah yang dibaca firmware.{{else if .LinkedDeviceID}}Periksa token akses dan rules Realtime Database.{{else}}Status masih berupa simulasi lokal; tautkan ID perangkat untuk menggunakan Firebase.{{end}}</p>
   </article>
 </section>
 <section class="card connection-card">
   <h2>Hubungkan perangkat</h2>
-  <p class="muted">{{if .FirebaseConnected}}Snapshot terbaru dimuat dari <code>devices/{{.LinkedDeviceID}}</code>. {{if .DebitAvailable}}Debit terbaca {{printf "%.1f" .DebitLPM}} L/mnt{{if not .FlowCalibrated}} (sensor debit belum dikalibrasi){{end}}.{{else}}Debit belum dikirim.{{end}} Tekanan air tidak ada pada snapshot.{{else if .LinkedDeviceID}}Perangkat menggunakan path Realtime Database <code>devices/{{.LinkedDeviceID}}</code>.{{else}}Hubungkan petak dengan mengisi ID perangkat Firebase pada formulir di Beranda.{{end}}</p>
+  <p class="muted">{{if .FirebaseConnected}}Snapshot terbaru dimuat dari <code>devices/{{.LinkedDeviceID}}/data_terkini</code>. {{if .DebitAvailable}}Debit terbaca {{printf "%.1f" .DebitLPM}} L/mnt{{if not .FlowCalibrated}} (sensor debit belum dikalibrasi){{end}}.{{else}}Debit belum dikirim.{{end}} Riwayat dan status pompa dibaca dari <code>riwayat</code> dan <code>status_pompa</code>. Tekanan air tidak ada pada snapshot.{{else if .LinkedDeviceID}}Perangkat menggunakan path Realtime Database <code>devices/{{.LinkedDeviceID}}</code>.{{else}}Hubungkan petak dengan mengisi ID perangkat Firebase pada formulir di Beranda.{{end}}</p>
   <div class="connection-details">
     <div><span class="detail-label">Lokasi</span><strong>Sawah · {{.Petak}}</strong></div>
     <div><span class="detail-label">Status LoRa</span><strong>{{if .LoRaOnline}}Online{{else}}Offline{{end}}{{if .RSSIAvailable}} ({{.RSSI}} dBm){{end}}</strong></div>

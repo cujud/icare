@@ -21,6 +21,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -73,51 +74,53 @@ type IrrigationState struct {
 }
 
 type PageData struct {
-	Title               string
-	Active              string
-	Petak               string
-	Petaks              []Plot
-	DeviceID            string
-	LinkedDeviceID      string
-	FirebaseConnected   bool
-	DeviceError         string
-	DeviceNode          string
-	DeviceFault         string
-	SensorStatus        string
-	SensorAvailable     bool
-	DistanceCM          float64
-	FlowCalibrated      bool
-	DebitAvailable      bool
-	DebitLPM            float64
-	TotalLiter          float64
-	TotalAvailable      bool
-	RSSI                int
-	RSSIAvailable       bool
-	LastUpdate          string
-	LastUpdateAgo       string
-	DeviceStale         bool
-	LoRaOnline          bool
-	SensorSeen          bool
-	PumpStatusAvailable bool
-	ConfigFresh         bool
-	ConfigReason        string
-	PlotName            string
-	IsAuth              bool
-	Error               string
-	UserName            string
-	UserEmail           string
-	Initials            string
-	Today               string
-	WaterLevel          float64
-	FlowRate            float64
-	FlowPercent         float64
-	Pressure            float64
-	PressureLabel       string
-	PumpOn              bool
-	Mode                string
-	ModeLabel           string
-	ChartPoints         string
-	Events              []Activity
+	Title                string
+	Active               string
+	Petak                string
+	Petaks               []Plot
+	DeviceID             string
+	LinkedDeviceID       string
+	FirebaseConnected    bool
+	DeviceError          string
+	DeviceNode           string
+	DeviceFault          string
+	SensorStatus         string
+	SensorAvailable      bool
+	DistanceCM           float64
+	WaterHeightCM        float64
+	WaterHeightAvailable bool
+	FlowCalibrated       bool
+	DebitAvailable       bool
+	DebitLPM             float64
+	TotalLiter           float64
+	TotalAvailable       bool
+	RSSI                 int
+	RSSIAvailable        bool
+	LastUpdate           string
+	LastUpdateAgo        string
+	DeviceStale          bool
+	LoRaOnline           bool
+	SensorSeen           bool
+	PumpStatusAvailable  bool
+	ConfigFresh          bool
+	ConfigReason         string
+	PlotName             string
+	IsAuth               bool
+	Error                string
+	UserName             string
+	UserEmail            string
+	Initials             string
+	Today                string
+	WaterLevel           float64
+	FlowRate             float64
+	FlowPercent          float64
+	Pressure             float64
+	PressureLabel        string
+	PumpOn               bool
+	Mode                 string
+	ModeLabel            string
+	ChartPoints          string
+	Events               []Activity
 }
 
 type App struct {
@@ -460,6 +463,7 @@ func (a *App) history(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	a.loadDeviceData(r.Context(), &data)
 	a.render(w, "history", data)
 }
 
@@ -747,13 +751,17 @@ func (a *App) loadDeviceData(ctx context.Context, data *PageData) {
 	latest := snapshot.Latest
 	data.DeviceNode = latest.Node
 	data.DeviceFault = latest.Fault
-	data.SensorStatus = latest.UltrasonicStatus
+	data.SensorStatus = latest.SensorStatus
 	data.FlowCalibrated = latest.FlowCalibrated
 	data.LoRaOnline = latest.LoRaOnline
-	data.SensorSeen = latest.SensorSeen
-	if latest.DistanceCM != nil && *latest.DistanceCM >= 0 && latest.SensorSeen && latest.UltrasonicValid && latest.UltrasonicFresh {
+	data.SensorSeen = latest.SensorConnected
+	if latest.DistanceCM != nil && *latest.DistanceCM >= 0 && latest.SensorConnected && latest.SensorValid && latest.DataFresh {
 		data.SensorAvailable = true
 		data.DistanceCM = *latest.DistanceCM
+	}
+	if latest.WaterHeightCM != nil && *latest.WaterHeightCM >= 0 && latest.SensorConnected && latest.SensorValid && latest.DataFresh {
+		data.WaterHeightAvailable = true
+		data.WaterHeightCM = *latest.WaterHeightCM
 	}
 	if latest.DebitLPM != nil && finite(*latest.DebitLPM) && *latest.DebitLPM >= 0 {
 		data.DebitAvailable = true
@@ -767,7 +775,11 @@ func (a *App) loadDeviceData(ctx context.Context, data *PageData) {
 		data.RSSIAvailable = true
 		data.RSSI = *latest.RSSI
 	}
-	if uploaded := latest.UploadedAtMS; uploaded > 0 {
+	uploaded := latest.UploadedAtMS
+	if uploaded <= 0 {
+		uploaded = latest.ReceivedAtMS
+	}
+	if uploaded > 0 {
 		uploadedAt := time.UnixMilli(uploaded)
 		data.LastUpdate = uploadedAt.In(time.FixedZone("WITA", 8*60*60)).Format("02/01/2006 15.04.05") + " WITA"
 		age := time.Since(uploadedAt)
@@ -784,20 +796,65 @@ func (a *App) loadDeviceData(ctx context.Context, data *PageData) {
 		// Gateway mengunggah berkala; tidak ada pembaruan >3 menit berarti gateway/ESP offline.
 		data.DeviceStale = age > 3*time.Minute
 	}
-	if latest.RelayOn != nil {
-		data.PumpOn = *latest.RelayOn
+	if latest.PumpOn != nil {
+		data.PumpOn = *latest.PumpOn
 		data.PumpStatusAvailable = true
-	} else if snapshot.Reported != nil && snapshot.Reported.RelayOn != nil {
-		data.PumpOn = *snapshot.Reported.RelayOn
+	} else if snapshot.Pump != nil && snapshot.Pump.PumpOn != nil {
+		data.PumpOn = *snapshot.Pump.PumpOn
 		data.PumpStatusAvailable = true
 	}
 	data.ModeLabel = "Tidak tersedia"
-	if snapshot.Reported != nil {
-		data.ConfigFresh = snapshot.Reported.ConfigFresh
-		data.ConfigReason = snapshot.Reported.Reason
+	if snapshot.Pump != nil {
+		data.ConfigFresh = snapshot.Pump.ConfigActive
+		data.ConfigReason = snapshot.Pump.StatusReason
+		if snapshot.Pump.Mode != "" {
+			data.ModeLabel = snapshot.Pump.Mode
+		}
+	}
+	history := make([]deviceEvent, 0, len(snapshot.History))
+	for _, event := range snapshot.History {
+		history = append(history, event)
+	}
+	sort.SliceStable(history, func(i, j int) bool {
+		return history[i].TimestampMS > history[j].TimestampMS
+	})
+	data.Events = make([]Activity, 0, len(history))
+	for _, event := range history {
+		when := event.LocalTime
+		if when == "" && event.TimestampMS > 0 {
+			when = time.UnixMilli(event.TimestampMS).In(time.FixedZone("WITA", 8*60*60)).Format("02/01/2006 15.04.05")
+		}
+		var details []string
+		if event.StatusReason != "" {
+			details = append(details, event.StatusReason)
+		}
+		if event.Fault != "" && event.Fault != event.StatusReason {
+			details = append(details, event.Fault)
+		}
+		if event.SensorStatus != "" && event.SensorStatus != event.Fault {
+			details = append(details, "Sensor "+event.SensorStatus)
+		}
+		if event.WaterHeightCM != nil && finite(*event.WaterHeightCM) {
+			details = append(details, fmt.Sprintf("Tinggi air %.1f cm", *event.WaterHeightCM))
+		}
+		if event.PumpOn != nil {
+			if *event.PumpOn {
+				details = append(details, "Pompa menyala")
+			} else {
+				details = append(details, "Pompa mati")
+			}
+		}
+		if event.Trigger != "" {
+			details = append(details, event.Trigger)
+		}
+		description := strings.Join(details, " · ")
+		data.Events = append(data.Events, Activity{
+			Time:        when,
+			Description: description,
+			Mode:        event.Mode,
+		})
 	}
 	data.ChartPoints = ""
-	data.Events = nil
 }
 
 func findPlot(plots []Plot, name string) Plot {

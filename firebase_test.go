@@ -19,7 +19,7 @@ func TestFirebaseReadsDeviceSnapshot(t *testing.T) {
 		if r.URL.Query().Get("auth") != "test-id-token" {
 			t.Errorf("auth query = %q, want Firebase ID token", r.URL.Query().Get("auth"))
 		}
-		_, _ = io.WriteString(w, `{"latest":{"jarak_cm":-1,"relay_on":false,"fault":"WAITING_DATA","node":"MENUNGGU","lora_online":false,"sensor_seen":false,"ultrasonic_fresh":false,"ultrasonic_valid":false,"ultrasonic_status":"WARMUP","flow_calibrated":false},"reported":{"configFresh":false,"configRevision":0,"reason":"MISSING_CONFIG","relayOn":false,"sensorReady":false,"updatedAtMs":123}}`)
+		_, _ = io.WriteString(w, gatewayExportJSON)
 	}))
 	defer server.Close()
 
@@ -33,14 +33,17 @@ func TestFirebaseReadsDeviceSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if snapshot.Latest == nil || snapshot.Reported == nil {
-		t.Fatalf("snapshot = %+v, want latest and reported branches", snapshot)
+	if snapshot.Latest == nil || snapshot.Pump == nil {
+		t.Fatalf("snapshot = %+v, want current telemetry and pump status branches", snapshot)
 	}
-	if snapshot.Latest.Fault != "WAITING_DATA" || snapshot.Latest.Node != "MENUNGGU" || snapshot.Latest.DistanceCM == nil || *snapshot.Latest.DistanceCM != -1 {
+	if snapshot.Latest.Fault != "OK" || snapshot.Latest.Node != "NODE_01" || snapshot.Latest.DistanceCM == nil || *snapshot.Latest.DistanceCM != 23.2 {
 		t.Fatalf("latest snapshot = %+v, want exported sensor values", snapshot.Latest)
 	}
-	if snapshot.Reported.Reason != "MISSING_CONFIG" || snapshot.Reported.RelayOn == nil || *snapshot.Reported.RelayOn {
-		t.Fatalf("reported snapshot = %+v, want exported device state", snapshot.Reported)
+	if snapshot.Pump == nil || snapshot.Pump.StatusReason != "MISSING_CONFIG" || snapshot.Pump.PumpOn == nil || *snapshot.Pump.PumpOn {
+		t.Fatalf("pump snapshot = %+v, want exported device state", snapshot.Pump)
+	}
+	if len(snapshot.History) != 1 {
+		t.Fatalf("history entries = %d, want one exported record", len(snapshot.History))
 	}
 }
 
@@ -62,7 +65,7 @@ func TestFirebaseCanReadWithoutAuthWhenExplicitlyEnabled(t *testing.T) {
 		if r.URL.Query().Has("auth") {
 			t.Error("anonymous Firebase request unexpectedly included an auth token")
 		}
-		_, _ = io.WriteString(w, `{"latest":{"jarak_cm":-1,"relay_on":false,"fault":"WAITING_DATA","node":"MENUNGGU"}}`)
+		_, _ = io.WriteString(w, gatewayExportJSON)
 	}))
 	defer server.Close()
 
@@ -77,7 +80,7 @@ func TestFirebaseCanReadWithoutAuthWhenExplicitlyEnabled(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if snapshot.Latest == nil || snapshot.Latest.Fault != "WAITING_DATA" {
+	if snapshot.Latest == nil || snapshot.Latest.Fault != "OK" {
 		t.Fatalf("snapshot = %+v, want anonymous latest telemetry", snapshot)
 	}
 }
@@ -115,7 +118,7 @@ func TestDashboardUsesFirebaseDeviceSnapshot(t *testing.T) {
 		if r.URL.Query().Get("auth") != "test-id-token" {
 			t.Errorf("auth query = %q, want Firebase ID token", r.URL.Query().Get("auth"))
 		}
-		_, _ = io.WriteString(w, `{"latest":{"jarak_cm":-1,"relay_on":false,"fault":"WAITING_DATA","node":"MENUNGGU","lora_online":false,"sensor_seen":false,"ultrasonic_fresh":false,"ultrasonic_valid":false,"ultrasonic_status":"WARMUP","flow_calibrated":false},"reported":{"configFresh":false,"reason":"MISSING_CONFIG","relayOn":false,"sensorReady":false}}`)
+		_, _ = io.WriteString(w, gatewayExportJSON)
 	}))
 	defer server.Close()
 
@@ -137,13 +140,46 @@ func TestDashboardUsesFirebaseDeviceSnapshot(t *testing.T) {
 	response := httptest.NewRecorder()
 	app.ServeHTTP(response, request)
 	body := response.Body.String()
-	for _, expected := range []string{"Terhubung ke Firebase", "Jarak sensor ke air", ">— <span>cm</span>", "WAITING_DATA", "Belum dikalibrasi", "MISSING_CONFIG", `name="device_id" value=""`, "Firebase Realtime Database"} {
+	for _, expected := range []string{"Terhubung ke Firebase", "Jarak sensor ke air", ">23.2 <span>cm</span>", "Tinggi air sawah 76.8 cm", "OK", "Belum dikalibrasi", "MISSING_CONFIG", `name="device_id" value=""`, "Firebase Realtime Database"} {
 		if !strings.Contains(body, expected) {
 			t.Errorf("dashboard missing %q", expected)
 		}
 	}
 	if strings.Contains(body, "75 cm") || strings.Contains(body, "Data sensor contoh") {
 		t.Error("dashboard displayed demo telemetry despite a successful Firebase read")
+	}
+}
+
+func TestHistoryUsesFirebaseExportRecords(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/devices/farm-1.json" {
+			t.Errorf("Firebase request = %s %s", r.Method, r.URL.Path)
+		}
+		_, _ = io.WriteString(w, gatewayExportJSON)
+	}))
+	defer server.Close()
+
+	app := newTestApp(t)
+	const token = "firebase-history-session"
+	seedTestUser(t, app, token)
+	if _, err := app.db.Exec("UPDATE petaks SET device_id = ? WHERE user_email = ?", "farm-1", "farmer@example.com"); err != nil {
+		t.Fatal(err)
+	}
+	app.firebase = &firebaseRTDB{
+		databaseURL: server.URL,
+		authToken:   "test-id-token",
+		devicesPath: "devices",
+		httpClient:  server.Client(),
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/history", nil)
+	request.AddCookie(&http.Cookie{Name: sessionCookieName, Value: token})
+	response := httptest.NewRecorder()
+	app.ServeHTTP(response, request)
+	for _, expected := range []string{"Riwayat Firebase", "MISSING_CONFIG", "Tinggi air 76.8 cm", "BERKALA_1_MENIT"} {
+		if !strings.Contains(response.Body.String(), expected) {
+			t.Errorf("Firebase history page missing %q", expected)
+		}
 	}
 }
 
@@ -208,7 +244,7 @@ func TestFirebasePumpToggleDisabledWithoutCommandSchema(t *testing.T) {
 	}
 }
 
-const gatewayExportJSON = `{"latest":{"calibration_k":0.2,"debit_lpm":0,"fault":"OK","flow_calibrated":false,"jarak_cm":74.5,"lora_online":true,"node":"NODE_01","received_at":1795003357000,"relay_on":false,"reported_at":1795003358000,"rssi":-41,"sensor_age_ms":802,"sensor_seen":true,"total_liter":0,"ultrasonic_fresh":true,"ultrasonic_status":"OK","ultrasonic_valid":true,"uploaded_at":1795003362905},"reported":{"configFresh":false,"reason":"MISSING_CONFIG","relayOn":false,"sensorReady":true,"updatedAtMs":1795003362905}}`
+const gatewayExportJSON = `{"data_terkini":{"data_air_terbaru":true,"debit_air_lpm":0,"faktor_kalibrasi_flow":0.2,"flow_sudah_kalibrasi":false,"id_node":"NODE_01","jam_sistem_valid":true,"jarak_sensor_ke_air_cm":23.2,"jeda_data_sensor_ms":177,"koneksi_lora":true,"modul_rtc_terpasang":true,"pompa_menyala":false,"sensor_air_valid":true,"sensor_terhubung":true,"sinyal_lora_dbm":-49,"status_gangguan":"OK","status_sensor_air":"OK","tinggi_air_sawah_cm":76.8,"total_volume_liter":0,"waktu_lokal":"2026-11-19 17:14:55","waktu_rtc_valid":true,"waktu_terima_epoch_ms":1795079694000,"waktu_update_server":1795079698126},"riwayat":{"-P6n4ZTLy3TdF0I-nnOP":{"debit_air_lpm":0,"id_node":"NODE_01","jarak_sensor_ke_air_cm":23.2,"keterangan_status":"MISSING_CONFIG","koneksi_lora":true,"mode_operasi":"MENUNGGU_KONFIGURASI","pemicu_pencatatan":"BERKALA_1_MENIT","pompa_menyala":false,"sinyal_lora_dbm":-51,"status_gangguan":"OK","status_sensor_air":"OK","tinggi_air_sawah_cm":76.8,"total_volume_liter":0,"waktu_epoch_ms":1795079683000,"waktu_lokal":"2026-11-19 17:14:43","waktu_upload_server":1795079686038}},"status_pompa":{"id_sesi":"c7b994aa21061edb","keterangan_status":"MISSING_CONFIG","konfigurasi_aktif":false,"mode_operasi":"MENUNGGU_KONFIGURASI","pompa_menyala":false,"revisi_konfigurasi":0,"sensor_siap":true,"waktu_update_server":1795079698126}}`
 
 func TestFirebaseDecodesRealGatewayExport(t *testing.T) {
 	var snapshot deviceSnapshot
@@ -216,8 +252,9 @@ func TestFirebaseDecodesRealGatewayExport(t *testing.T) {
 		t.Fatal(err)
 	}
 	latest := snapshot.Latest
-	if latest == nil || latest.DistanceCM == nil || *latest.DistanceCM != 74.5 || latest.UploadedAtMS != 1795003362905 ||
-		latest.RSSI == nil || *latest.RSSI != -41 || latest.DebitLPM == nil || latest.TotalLiter == nil {
+	if latest == nil || latest.DistanceCM == nil || *latest.DistanceCM != 23.2 || latest.UploadedAtMS != 1795079698126 ||
+		latest.RSSI == nil || *latest.RSSI != -49 || latest.DebitLPM == nil || latest.TotalLiter == nil ||
+		latest.WaterHeightCM == nil || *latest.WaterHeightCM != 76.8 {
 		t.Fatalf("latest = %+v, want values from the real gateway export", latest)
 	}
 }

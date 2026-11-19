@@ -29,32 +29,52 @@ Backend membaca Firebase Realtime Database REST API mengikuti ekspor perangkat:
 {
   "devices": {
     "ESP32_Gateway": {
-      "latest": {
-        "jarak_cm": -1,
-        "relay_on": false,
-        "fault": "WAITING_DATA",
-        "node": "MENUNGGU",
-        "lora_online": false,
-        "sensor_seen": false,
-        "ultrasonic_fresh": false,
-        "ultrasonic_valid": false,
-        "ultrasonic_status": "WARMUP",
-        "flow_calibrated": false
+      "data_terkini": {
+        "data_air_terbaru": true,
+        "debit_air_lpm": 0,
+        "flow_sudah_kalibrasi": false,
+        "id_node": "NODE_01",
+        "jarak_sensor_ke_air_cm": 23.2,
+        "koneksi_lora": true,
+        "pompa_menyala": false,
+        "sensor_air_valid": true,
+        "sensor_terhubung": true,
+        "sinyal_lora_dbm": -49,
+        "status_gangguan": "OK",
+        "status_sensor_air": "OK",
+        "tinggi_air_sawah_cm": 76.8,
+        "total_volume_liter": 0,
+        "waktu_update_server": 1795079698126
       },
-      "reported": {
-        "configFresh": false,
-        "reason": "MISSING_CONFIG",
-        "relayOn": false,
-        "sensorReady": false
+      "riwayat": {
+        "-P6n4ZTLy3TdF0I-nnOP": {
+          "id_node": "NODE_01",
+          "keterangan_status": "MISSING_CONFIG",
+          "mode_operasi": "MENUNGGU_KONFIGURASI",
+          "pemicu_pencatatan": "BERKALA_1_MENIT",
+          "pompa_menyala": false,
+          "status_gangguan": "OK",
+          "tinggi_air_sawah_cm": 76.8,
+          "waktu_epoch_ms": 1795079683000,
+          "waktu_lokal": "2026-11-19 17:14:43"
+        }
+      },
+      "status_pompa": {
+        "keterangan_status": "MISSING_CONFIG",
+        "konfigurasi_aktif": false,
+        "mode_operasi": "MENUNGGU_KONFIGURASI",
+        "pompa_menyala": false,
+        "sensor_siap": true,
+        "waktu_update_server": 1795079698126
       }
     }
   }
 }
 ```
 
-Path perangkat adalah `devices/{deviceID}/latest` dan `devices/{deviceID}/reported`; untuk ekspor ini, ID perangkatnya `ESP32_Gateway`. Nilai `jarak_cm` hanya ditampilkan sebagai jarak sensor jika sensor dilaporkan valid dan data masih fresh. Ekspor saat ini menunjukkan `jarak_cm: -1`, `WAITING_DATA`, dan `WARMUP`, jadi belum ada pembacaan jarak yang valid. Field debit belum memuat nilai debit dan `flow_calibrated` masih `false`; tekanan air tidak ada pada ekspor. Status relay dibaca dari `latest.relay_on` (dengan `reported.relayOn` sebagai cadangan).
+Path perangkat mengikuti struktur ekspor: `devices/{deviceID}/data_terkini`, `devices/{deviceID}/riwayat`, dan `devices/{deviceID}/status_pompa`; ID perangkat pada ekspor adalah `ESP32_Gateway`. Jarak sensor hanya ditampilkan saat `sensor_air_valid` dan `data_air_terbaru` bernilai true. Riwayat ditampilkan di halaman Riwayat dan berisi status, mode operasi, pemicu pencatatan, serta ketinggian air jika tersedia. Status pompa dibaca dari `data_terkini.pompa_menyala`, dengan `status_pompa.pompa_menyala` sebagai cadangan. Ekspor tidak menyertakan jalur perintah yang dibaca firmware; aplikasi tidak menulis ke Firebase dan kontrol pompa/mode perangkat tetap dinonaktifkan.
 
-Tambahkan ID `ESP32_Gateway` pada petak di Beranda agar aplikasi membaca perangkat ini. Ekspor tidak menyertakan node atau format perintah yang dibaca firmware. Karena itu aplikasi tidak menulis ke `latest` atau `reported` dan kontrol pompa/mode perangkat sengaja dinonaktifkan sampai format perintah tersebut diketahui.
+Tambahkan ID `ESP32_Gateway` pada petak di Beranda agar aplikasi membaca perangkat ini. Ekspor tidak menyertakan node atau format perintah yang dibaca firmware. Karena itu aplikasi hanya membaca Firebase dan kontrol pompa/mode perangkat sengaja dinonaktifkan sampai format perintah tersebut diketahui.
 
 Saat startup, aplikasi memuat `.env` dari direktori project tanpa menimpa environment variable yang sudah disetel. Untuk baca tanpa autentikasi, aktifkan opsi anonim:
 
@@ -80,7 +100,7 @@ Backend login ke Firebase Auth (email/password) di sisi server, menyimpan ID tok
 
 Jika memakai rules yang membatasi UID, jangan aktifkan mode anonim: isi `ICARE_FIREBASE_AUTH_TOKEN` dengan Firebase ID token yang masih berlaku, atau gunakan pasangan API key dan refresh token dari akun dengan UID yang diizinkan.
 
-Tanpa akses baca Firebase atau ID perangkat tertaut, aplikasi memakai fixture lokal (75 cm, 85 L/mnt, dan 1,2 bar) serta simulasi pompa. Grafik historis 24 jam dan aktivitas belum dibaca dari Firebase. Kontrol pompa perangkat belum diaktifkan karena ekspor belum menunjukkan path perintah yang dibaca firmware. Sesi, akun, petak, dan sebagian aktivitas prototipe masih dikelola lokal; sesi berakhir saat server dimulai ulang. Prototipe ini tidak ditujukan untuk deployment produksi.
+Tanpa akses baca Firebase atau ID perangkat tertaut, aplikasi memakai fixture lokal (75 cm, 85 L/mnt, dan 1,2 bar) serta simulasi pompa. Grafik historis 24 jam belum tersedia; data dari node `riwayat` dapat dilihat pada halaman Riwayat. Sesi, akun, petak, dan aktivitas simulasi masih dikelola lokal; sesi berakhir saat server dimulai ulang. Prototipe ini tidak ditujukan untuk deployment produksi.
 
 ## Pemeriksaan
 

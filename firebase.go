@@ -36,38 +36,64 @@ type firebaseRTDB struct {
 }
 
 type deviceSnapshot struct {
-	Latest   *deviceLatest   `json:"latest"`
-	Reported *deviceReported `json:"reported"`
+	Latest  *deviceLatest          `json:"data_terkini"`
+	History map[string]deviceEvent `json:"riwayat"`
+	Pump    *devicePumpStatus      `json:"status_pompa"`
 }
 
 type deviceLatest struct {
-	DistanceCM       *float64 `json:"jarak_cm"`
-	RelayOn          *bool    `json:"relay_on"`
-	Fault            string   `json:"fault"`
-	Node             string   `json:"node"`
-	LoRaOnline       bool     `json:"lora_online"`
-	SensorSeen       bool     `json:"sensor_seen"`
-	UltrasonicFresh  bool     `json:"ultrasonic_fresh"`
-	UltrasonicValid  bool     `json:"ultrasonic_valid"`
-	UltrasonicStatus string   `json:"ultrasonic_status"`
-	FlowCalibrated   bool     `json:"flow_calibrated"`
-	SensorAgeMS      int64    `json:"sensor_age_ms"`
-	ReportedAtMS     int64    `json:"reported_at"`
-	ReceivedAtMS     int64    `json:"received_at"`
-	UploadedAtMS     int64    `json:"uploaded_at"`
-	DebitLPM         *float64 `json:"debit_lpm"`
-	TotalLiter       *float64 `json:"total_liter"`
-	RSSI             *int     `json:"rssi"`
-	CalibrationK     *float64 `json:"calibration_k"`
+	DataFresh       bool     `json:"data_air_terbaru"`
+	DebitLPM        *float64 `json:"debit_air_lpm"`
+	CalibrationK    *float64 `json:"faktor_kalibrasi_flow"`
+	FlowCalibrated  bool     `json:"flow_sudah_kalibrasi"`
+	Node            string   `json:"id_node"`
+	SystemTimeValid bool     `json:"jam_sistem_valid"`
+	DistanceCM      *float64 `json:"jarak_sensor_ke_air_cm"`
+	SensorAgeMS     int64    `json:"jeda_data_sensor_ms"`
+	LoRaOnline      bool     `json:"koneksi_lora"`
+	RTCInstalled    bool     `json:"modul_rtc_terpasang"`
+	PumpOn          *bool    `json:"pompa_menyala"`
+	SensorValid     bool     `json:"sensor_air_valid"`
+	SensorConnected bool     `json:"sensor_terhubung"`
+	RSSI            *int     `json:"sinyal_lora_dbm"`
+	Fault           string   `json:"status_gangguan"`
+	SensorStatus    string   `json:"status_sensor_air"`
+	WaterHeightCM   *float64 `json:"tinggi_air_sawah_cm"`
+	TotalLiter      *float64 `json:"total_volume_liter"`
+	LocalTime       string   `json:"waktu_lokal"`
+	RTCValid        bool     `json:"waktu_rtc_valid"`
+	ReceivedAtMS    int64    `json:"waktu_terima_epoch_ms"`
+	UploadedAtMS    int64    `json:"waktu_update_server"`
 }
 
-type deviceReported struct {
-	RelayOn        *bool  `json:"relayOn"`
-	ConfigFresh    bool   `json:"configFresh"`
-	ConfigRevision int    `json:"configRevision"`
-	Reason         string `json:"reason"`
-	SensorReady    bool   `json:"sensorReady"`
-	UpdatedAtMS    int64  `json:"updatedAtMs"`
+type deviceEvent struct {
+	DebitLPM      *float64 `json:"debit_air_lpm"`
+	Node          string   `json:"id_node"`
+	DistanceCM    *float64 `json:"jarak_sensor_ke_air_cm"`
+	StatusReason  string   `json:"keterangan_status"`
+	LoRaOnline    bool     `json:"koneksi_lora"`
+	Mode          string   `json:"mode_operasi"`
+	PumpOn        *bool    `json:"pompa_menyala"`
+	RSSI          *int     `json:"sinyal_lora_dbm"`
+	Fault         string   `json:"status_gangguan"`
+	SensorStatus  string   `json:"status_sensor_air"`
+	WaterHeightCM *float64 `json:"tinggi_air_sawah_cm"`
+	TotalLiter    *float64 `json:"total_volume_liter"`
+	TimestampMS   int64    `json:"waktu_epoch_ms"`
+	LocalTime     string   `json:"waktu_lokal"`
+	UploadedAtMS  int64    `json:"waktu_upload_server"`
+	Trigger       string   `json:"pemicu_pencatatan"`
+}
+
+type devicePumpStatus struct {
+	SessionID      string `json:"id_sesi"`
+	StatusReason   string `json:"keterangan_status"`
+	ConfigActive   bool   `json:"konfigurasi_aktif"`
+	Mode           string `json:"mode_operasi"`
+	PumpOn         *bool  `json:"pompa_menyala"`
+	ConfigRevision int    `json:"revisi_konfigurasi"`
+	SensorReady    bool   `json:"sensor_siap"`
+	UpdatedAtMS    int64  `json:"waktu_update_server"`
 }
 
 func newFirebaseRTDBFromEnv() (*firebaseRTDB, error) {
@@ -131,10 +157,16 @@ func (f *firebaseRTDB) getDevice(ctx context.Context, deviceID string) (deviceSn
 		return snapshot, fmt.Errorf("decode Firebase device data: %w", err)
 	}
 	if snapshot.Latest == nil {
-		return snapshot, errors.New("Firebase device data is missing latest telemetry")
+		return snapshot, errors.New("Firebase device data is missing data_terkini telemetry")
 	}
 	if snapshot.Latest.DistanceCM != nil && !finite(*snapshot.Latest.DistanceCM) {
 		return snapshot, errors.New("Firebase device data contains a non-finite distance")
+	}
+	if snapshot.Latest.WaterHeightCM != nil && !finite(*snapshot.Latest.WaterHeightCM) {
+		return snapshot, errors.New("Firebase device data contains a non-finite water height")
+	}
+	if snapshot.Latest.DebitLPM != nil && !finite(*snapshot.Latest.DebitLPM) {
+		return snapshot, errors.New("Firebase device data contains a non-finite flow rate")
 	}
 	return snapshot, nil
 }
