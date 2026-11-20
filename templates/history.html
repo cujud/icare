@@ -9,17 +9,26 @@
 </div>
 {{if .DeviceError}}<p class="alert" role="alert">{{.DeviceError}}</p>{{end}}
 <section class="card activity-card page-card">
-  <div class="section-heading"><h2>Pembacaan terbaru</h2><span class="muted">{{len .Events}} catatan</span></div>
+  <div class="section-heading">
+    <h2>Pembacaan terbaru</h2>
+    <span class="muted">Halaman {{.HistoryPage}} · {{len .Events}} dari maks. {{.HistoryPageSize}} data</span>
+  </div>
   {{if .Events}}
   <div class="table-scroll">
     <table>
       <thead><tr><th>Waktu</th><th>Pembacaan</th><th>Mode operasi</th></tr></thead>
-      <tbody>{{range .Events}}<tr><td>{{.Time}}</td><td>{{.Description}}</td><td><span class="mode-tag">{{.Mode}}</span></td></tr>{{end}}</tbody>
+      <tbody id="history-rows">{{range .Events}}<tr {{if .Key}}data-event-key="{{.Key}}"{{end}}><td>{{.Time}}</td><td>{{.Description}}</td><td><span class="mode-tag">{{.Mode}}</span></td></tr>{{end}}</tbody>
     </table>
   </div>
   {{else}}
     <p class="empty-state">{{if .FirebaseConnected}}Belum ada riwayat perangkat.{{else if .LinkedDeviceID}}Riwayat tidak tersedia selama perangkat belum terhubung.{{else}}Belum ada aktivitas pompa.{{end}}</p>
   {{end}}
+  {{if or .HasNewerHistory .HasOlderHistory}}
+  <nav class="history-pagination" aria-label="Navigasi halaman riwayat">
+    {{if .HasNewerHistory}}<a class="button button-outline" href="/history?petak={{urlquery .Petak}}&amp;after={{urlquery .HistoryNewerCursor}}&amp;page={{.NewerPage}}">Lebih baru</a>{{else}}<span></span>{{end}}
+    {{if .HasOlderHistory}}<a class="button button-outline" href="/history?petak={{urlquery .Petak}}&amp;before={{urlquery .HistoryOlderCursor}}&amp;page={{.OlderPage}}">Lebih lama</a>{{end}}
+  </nav>
+  {{end}}
 </section>
-<p class="demo-hint page-hint">{{if .FirebaseConnected}}Riwayat sensor dimuat dari <code>devices/{{.LinkedDeviceID}}/riwayat</code>.{{else if .LinkedDeviceID}}Riwayat sensor dibaca dari Firebase setelah koneksi pulih.{{else}}Riwayat demo tersimpan di memori dan akan direset saat server dimulai ulang.{{end}}</p>
+<p class="demo-hint page-hint">{{if .FirebaseConnected}}Maksimal 50 catatan dimuat per halaman langsung dari <code>devices/{{.LinkedDeviceID}}/riwayat</code>.{{else if .LinkedDeviceID}}Riwayat sensor dibaca dari Firebase setelah koneksi pulih.{{else}}Riwayat demo tersimpan di memori dan akan direset saat server dimulai ulang.{{end}}</p>
 {{end}}

@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -11,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -37,6 +40,7 @@ type firebaseRTDB struct {
 
 type deviceSnapshot struct {
 	Latest  *deviceLatest          `json:"data_terkini"`
+	Desired *devicePumpDesired     `json:"desired"`
 	History map[string]deviceEvent `json:"riwayat"`
 	Pump    *devicePumpStatus      `json:"status_pompa"`
 }
@@ -86,14 +90,28 @@ type deviceEvent struct {
 }
 
 type devicePumpStatus struct {
-	SessionID      string `json:"id_sesi"`
-	StatusReason   string `json:"keterangan_status"`
-	ConfigActive   bool   `json:"konfigurasi_aktif"`
-	Mode           string `json:"mode_operasi"`
-	PumpOn         *bool  `json:"pompa_menyala"`
-	ConfigRevision int    `json:"revisi_konfigurasi"`
-	SensorReady    bool   `json:"sensor_siap"`
-	UpdatedAtMS    int64  `json:"waktu_update_server"`
+	SessionID      string   `json:"id_sesi"`
+	StatusReason   string   `json:"keterangan_status"`
+	ConfigActive   bool     `json:"konfigurasi_aktif"`
+	Mode           string   `json:"mode_operasi"`
+	PumpOn         *bool    `json:"pompa_menyala"`
+	ConfigRevision int      `json:"revisi_konfigurasi"`
+	SensorReady    bool     `json:"sensor_siap"`
+	UpdatedAtMS    int64    `json:"waktu_update_server"`
+	AutoOffCM      *float64 `json:"batas_mati_otomatis_cm"`
+	AutoOnCM       *float64 `json:"batas_nyala_otomatis_cm"`
+}
+
+type devicePumpDesired struct {
+	AutoMode    *bool `json:"autoMode"`
+	RelayOn     *bool `json:"relayOn"`
+	UpdatedAtMS int64 `json:"updatedAtMs"`
+}
+
+type devicePumpDesiredUpdate struct {
+	AutoMode    *bool `json:"autoMode,omitempty"`
+	RelayOn     *bool `json:"relayOn,omitempty"`
+	UpdatedAtMS int64 `json:"updatedAtMs"`
 }
 
 func newFirebaseRTDBFromEnv() (*firebaseRTDB, error) {
@@ -141,23 +159,17 @@ func (f *firebaseRTDB) getDevice(ctx context.Context, deviceID string) (deviceSn
 	if !validFirebaseKey(deviceID) {
 		return snapshot, errors.New("device ID is not a valid Realtime Database key")
 	}
-	request, err := f.newRequest(ctx, http.MethodGet, f.deviceURL(deviceID), nil)
-	if err != nil {
+	if err := f.readDeviceBranch(ctx, deviceID, "data_terkini", nil, &snapshot.Latest); err != nil {
 		return snapshot, err
-	}
-	response, err := f.httpClient.Do(request)
-	if err != nil {
-		return snapshot, errors.New("read Firebase device: network request failed")
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		return snapshot, firebaseResponseError("read", response)
-	}
-	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&snapshot); err != nil {
-		return snapshot, fmt.Errorf("decode Firebase device data: %w", err)
 	}
 	if snapshot.Latest == nil {
 		return snapshot, errors.New("Firebase device data is missing data_terkini telemetry")
+	}
+	if err := f.readDeviceBranch(ctx, deviceID, "status_pompa", nil, &snapshot.Pump); err != nil {
+		return snapshot, err
+	}
+	if _, err := f.readOptionalDeviceBranch(ctx, deviceID, "desired", nil, &snapshot.Desired); err != nil {
+		return snapshot, err
 	}
 	if snapshot.Latest.DistanceCM != nil && !finite(*snapshot.Latest.DistanceCM) {
 		return snapshot, errors.New("Firebase device data contains a non-finite distance")
@@ -171,8 +183,288 @@ func (f *firebaseRTDB) getDevice(ctx context.Context, deviceID string) (deviceSn
 	return snapshot, nil
 }
 
+func (f *firebaseRTDB) canWrite() bool {
+	if f == nil {
+		return false
+	}
+	f.tokenMu.Lock()
+	defer f.tokenMu.Unlock()
+	return !f.anonymousRead && (f.authToken != "" ||
+		(f.refreshToken != "" && f.apiKey != "") ||
+		(f.email != "" && f.password != "" && f.apiKey != ""))
+}
+
+func (f *firebaseRTDB) updateDeviceDesired(ctx context.Context, deviceID string, update devicePumpDesiredUpdate) error {
+	if !f.canWrite() {
+		return errors.New("Firebase authenticated write credentials are required")
+	}
+	if !validFirebaseKey(deviceID) {
+		return errors.New("device ID is not a valid Realtime Database key")
+	}
+	if update.AutoMode == nil && update.RelayOn == nil {
+		return errors.New("Firebase pump command has no desired state")
+	}
+	payload, err := json.Marshal(update)
+	if err != nil {
+		return fmt.Errorf("encode Firebase pump command: %w", err)
+	}
+	request, err := f.newRequest(ctx, http.MethodPatch, f.deviceBranchURL(deviceID, "desired"), bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	response, err := f.httpClient.Do(request)
+	if err != nil {
+		return errors.New("send Firebase pump command: network request failed")
+	}
+	defer response.Body.Close()
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		return firebaseResponseError("write desired pump state", response)
+	}
+	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
+	return nil
+}
+
+const firebaseHistoryPageSize = 50
+
+type firebaseHistoryRecord struct {
+	Key   string
+	Event deviceEvent
+}
+
+type firebaseHistoryPage struct {
+	Records   []firebaseHistoryRecord
+	HasOlder  bool
+	HasNewer  bool
+	OldestKey string
+	NewestKey string
+}
+
+func (f *firebaseRTDB) getDeviceHistory(ctx context.Context, deviceID, direction, cursor string) (firebaseHistoryPage, error) {
+	var page firebaseHistoryPage
+	if !f.ready() {
+		return page, errors.New("Firebase ID token or API key and refresh token are required")
+	}
+	if !validFirebaseKey(deviceID) {
+		return page, errors.New("device ID is not a valid Realtime Database key")
+	}
+	if cursor != "" && !validFirebaseKey(cursor) {
+		return page, errors.New("history cursor is not a valid Realtime Database key")
+	}
+	if direction != "" && direction != "latest" && direction != "before" && direction != "after" {
+		return page, errors.New("history direction is invalid")
+	}
+
+	query := url.Values{
+		"orderBy": {`"$key"`},
+	}
+	switch direction {
+	case "before":
+		query.Set("endAt", firebaseJSONString(cursor))
+		query.Set("limitToLast", strconv.Itoa(firebaseHistoryPageSize+2))
+	case "after":
+		query.Set("startAt", firebaseJSONString(cursor))
+		query.Set("limitToFirst", strconv.Itoa(firebaseHistoryPageSize+2))
+	default:
+		query.Set("limitToLast", strconv.Itoa(firebaseHistoryPageSize+1))
+	}
+	var history map[string]deviceEvent
+	if err := f.readDeviceBranch(ctx, deviceID, "riwayat", query, &history); err != nil {
+		return page, err
+	}
+
+	records := make([]firebaseHistoryRecord, 0, len(history))
+	for key, event := range history {
+		records = append(records, firebaseHistoryRecord{Key: key, Event: event})
+	}
+	sort.Slice(records, func(i, j int) bool { return records[i].Key < records[j].Key })
+
+	switch direction {
+	case "before":
+		records = filterHistoryRecords(records, func(record firebaseHistoryRecord) bool { return record.Key < cursor })
+		page.HasNewer = cursor != ""
+		if len(records) > firebaseHistoryPageSize {
+			page.HasOlder = true
+			records = records[len(records)-firebaseHistoryPageSize:]
+		}
+	case "after":
+		records = filterHistoryRecords(records, func(record firebaseHistoryRecord) bool { return record.Key > cursor })
+		page.HasOlder = cursor != ""
+		if len(records) > firebaseHistoryPageSize {
+			page.HasNewer = true
+			records = records[:firebaseHistoryPageSize]
+		}
+	default:
+		if len(records) > firebaseHistoryPageSize {
+			page.HasOlder = true
+			records = records[len(records)-firebaseHistoryPageSize:]
+		}
+	}
+
+	if len(records) > 0 {
+		page.OldestKey = records[0].Key
+		page.NewestKey = records[len(records)-1].Key
+	}
+	sort.SliceStable(records, func(i, j int) bool {
+		if records[i].Event.TimestampMS == records[j].Event.TimestampMS {
+			return records[i].Key > records[j].Key
+		}
+		return records[i].Event.TimestampMS > records[j].Event.TimestampMS
+	})
+	page.Records = records
+	return page, nil
+}
+
+func filterHistoryRecords(records []firebaseHistoryRecord, keep func(firebaseHistoryRecord) bool) []firebaseHistoryRecord {
+	filtered := make([]firebaseHistoryRecord, 0, len(records))
+	for _, record := range records {
+		if keep(record) {
+			filtered = append(filtered, record)
+		}
+	}
+	return filtered
+}
+
+func firebaseJSONString(value string) string {
+	encoded, _ := json.Marshal(value)
+	return string(encoded)
+}
+
+func (f *firebaseRTDB) readDeviceBranch(ctx context.Context, deviceID, branch string, query url.Values, target any) error {
+	found, err := f.readOptionalDeviceBranch(ctx, deviceID, branch, query, target)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return fmt.Errorf("Firebase branch %s is missing", branch)
+	}
+	return nil
+}
+
+func (f *firebaseRTDB) readOptionalDeviceBranch(ctx context.Context, deviceID, branch string, query url.Values, target any) (bool, error) {
+	requestURL := f.deviceBranchURL(deviceID, branch)
+	if len(query) > 0 {
+		parsedURL, err := url.Parse(requestURL)
+		if err != nil {
+			return false, errors.New("create Firebase request: invalid request URL")
+		}
+		parsedURL.RawQuery = query.Encode()
+		requestURL = parsedURL.String()
+	}
+	request, err := f.newRequest(ctx, http.MethodGet, requestURL, nil)
+	if err != nil {
+		return false, err
+	}
+	response, err := f.httpClient.Do(request)
+	if err != nil {
+		return false, fmt.Errorf("read Firebase %s: network request failed", branch)
+	}
+	defer response.Body.Close()
+	if response.StatusCode == http.StatusNotFound {
+		return false, nil
+	}
+	if response.StatusCode != http.StatusOK {
+		return false, firebaseResponseError("read "+branch, response)
+	}
+	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(target); err != nil {
+		return false, fmt.Errorf("decode Firebase %s data: %w", branch, err)
+	}
+	return true, nil
+}
+
 func (f *firebaseRTDB) deviceURL(deviceID string) string {
 	return f.databaseURL + "/" + f.devicesPath + "/" + url.PathEscape(deviceID) + ".json"
+}
+
+func (f *firebaseRTDB) deviceBranchURL(deviceID, branch string) string {
+	return f.databaseURL + "/" + f.devicesPath + "/" + url.PathEscape(deviceID) + "/" + branch + ".json"
+}
+
+type firebaseStreamEvent struct {
+	Type string          `json:"-"`
+	Path string          `json:"path"`
+	Data json.RawMessage `json:"data"`
+}
+
+func (f *firebaseRTDB) streamDeviceBranch(ctx context.Context, deviceID, branch string, query url.Values, callback func(firebaseStreamEvent) error) error {
+	requestURL := f.deviceBranchURL(deviceID, branch)
+	parsedURL, err := url.Parse(requestURL)
+	if err != nil {
+		return errors.New("create Firebase stream request: invalid request URL")
+	}
+	parsedURL.RawQuery = query.Encode()
+	request, err := f.newRequest(ctx, http.MethodGet, parsedURL.String(), nil)
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Accept", "text/event-stream")
+	baseClient := f.httpClient
+	if baseClient == nil {
+		baseClient = http.DefaultClient
+	}
+	client := *baseClient
+	client.Timeout = 0
+	response, err := client.Do(request)
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil
+		}
+		return fmt.Errorf("connect Firebase %s stream: network request failed", branch)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return firebaseResponseError("stream "+branch, response)
+	}
+
+	scanner := bufio.NewScanner(response.Body)
+	scanner.Buffer(make([]byte, 4096), 1<<20)
+	eventType := ""
+	var data strings.Builder
+	dispatch := func() error {
+		if data.Len() == 0 {
+			eventType = ""
+			return nil
+		}
+		var event firebaseStreamEvent
+		if err := json.Unmarshal([]byte(data.String()), &event); err != nil {
+			return fmt.Errorf("decode Firebase %s stream event: %w", branch, err)
+		}
+		event.Type = eventType
+		data.Reset()
+		eventType = ""
+		if event.Type == "keep-alive" || event.Type == "" {
+			return nil
+		}
+		return callback(event)
+	}
+	for scanner.Scan() {
+		if ctx.Err() != nil {
+			return nil
+		}
+		line := scanner.Text()
+		switch {
+		case line == "":
+			if err := dispatch(); err != nil {
+				return err
+			}
+		case strings.HasPrefix(line, "event:"):
+			eventType = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
+		case strings.HasPrefix(line, "data:"):
+			if data.Len() > 0 {
+				data.WriteByte('\n')
+			}
+			data.WriteString(strings.TrimSpace(strings.TrimPrefix(line, "data:")))
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		if ctx.Err() != nil {
+			return nil
+		}
+		return fmt.Errorf("read Firebase %s stream: %w", branch, err)
+	}
+	if ctx.Err() != nil {
+		return nil
+	}
+	return fmt.Errorf("Firebase %s stream closed unexpectedly", branch)
 }
 
 func (f *firebaseRTDB) newRequest(ctx context.Context, method, requestURL string, body io.Reader) (*http.Request, error) {

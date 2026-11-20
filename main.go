@@ -11,11 +11,13 @@ import (
 	"embed"
 	"encoding/binary"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"html/template"
 	"io/fs"
 	"log"
+	"math"
 	"net/http"
 	"net/mail"
 	"net/url"
@@ -28,6 +30,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/gorilla/websocket"
 	_ "modernc.org/sqlite"
 )
 
@@ -54,9 +57,13 @@ type Session struct {
 }
 
 type Activity struct {
-	Time        string
-	Description string
-	Mode        string
+	Key                  string  `json:"key,omitempty"`
+	Time                 string  `json:"time"`
+	Description          string  `json:"description"`
+	Mode                 string  `json:"mode"`
+	TimestampMS          int64   `json:"timestamp_ms,omitempty"`
+	WaterHeightCM        float64 `json:"water_height_cm"`
+	WaterHeightAvailable bool    `json:"water_height_available,omitempty"`
 }
 
 type Plot struct {
@@ -74,63 +81,88 @@ type IrrigationState struct {
 }
 
 type PageData struct {
-	Title                string
-	Active               string
-	Petak                string
-	Petaks               []Plot
-	DeviceID             string
-	LinkedDeviceID       string
-	FirebaseConnected    bool
-	DeviceError          string
-	DeviceNode           string
-	DeviceFault          string
-	SensorStatus         string
-	SensorAvailable      bool
-	DistanceCM           float64
-	WaterHeightCM        float64
-	WaterHeightAvailable bool
-	FlowCalibrated       bool
-	DebitAvailable       bool
-	DebitLPM             float64
-	TotalLiter           float64
-	TotalAvailable       bool
-	RSSI                 int
-	RSSIAvailable        bool
-	LastUpdate           string
-	LastUpdateAgo        string
-	DeviceStale          bool
-	LoRaOnline           bool
-	SensorSeen           bool
-	PumpStatusAvailable  bool
-	ConfigFresh          bool
-	ConfigReason         string
-	PlotName             string
-	IsAuth               bool
-	Error                string
-	UserName             string
-	UserEmail            string
-	Initials             string
-	Today                string
-	WaterLevel           float64
-	FlowRate             float64
-	FlowPercent          float64
-	Pressure             float64
-	PressureLabel        string
-	PumpOn               bool
-	Mode                 string
-	ModeLabel            string
-	ChartPoints          string
-	Events               []Activity
+	Title                  string
+	Active                 string
+	Petak                  string
+	Petaks                 []Plot
+	DeviceID               string
+	LinkedDeviceID         string
+	FirebaseConnected      bool
+	DeviceError            string
+	DeviceNode             string
+	DeviceFault            string
+	SensorStatus           string
+	SensorAvailable        bool
+	SensorValid            bool
+	DataFresh              bool
+	DistanceCM             float64
+	WaterHeightCM          float64
+	WaterHeightAvailable   bool
+	FlowCalibrated         bool
+	DebitAvailable         bool
+	DebitLPM               float64
+	TotalLiter             float64
+	TotalAvailable         bool
+	RSSI                   int
+	RSSIAvailable          bool
+	LastUpdateMS           int64
+	LastUpdate             string
+	LastUpdateAgo          string
+	DeviceStale            bool
+	LoRaOnline             bool
+	SensorSeen             bool
+	PumpStatusAvailable    bool
+	DeviceWriteAvailable   bool
+	DesiredStateAvailable  bool
+	DeviceControlAvailable bool
+	DeviceControlPending   bool
+	DesiredUpdatedAtMS     int64
+	AutoThresholdAvailable bool
+	AutoOffDistanceCM      float64
+	AutoOnDistanceCM       float64
+	AutoChartThresholds    bool
+	AutoOffChartY          float64
+	AutoOnChartY           float64
+	ConfigFresh            bool
+	ConfigReason           string
+	PlotName               string
+	IsAuth                 bool
+	Error                  string
+	UserName               string
+	UserEmail              string
+	Initials               string
+	Today                  string
+	WaterLevel             float64
+	FlowRate               float64
+	FlowPercent            float64
+	Pressure               float64
+	PressureLabel          string
+	PumpOn                 bool
+	Mode                   string
+	ModeLabel              string
+	ChartPoints            string
+	ChartStartMS           int64
+	ChartLabels            []string
+	Events                 []Activity
+	HistoryPage            int
+	OlderPage              int
+	NewerPage              int
+	HistoryPageSize        int
+	HistoryOlderCursor     string
+	HistoryNewerCursor     string
+	HasOlderHistory        bool
+	HasNewerHistory        bool
 }
 
 type App struct {
-	mux       *http.ServeMux
-	templates map[string]*template.Template
-	mu        sync.Mutex
-	sessions  map[string]Session
-	db        *sql.DB
-	state     IrrigationState
-	firebase  *firebaseRTDB
+	mux           *http.ServeMux
+	templates     map[string]*template.Template
+	mu            sync.Mutex
+	sessions      map[string]Session
+	db            *sql.DB
+	state         IrrigationState
+	firebase      *firebaseRTDB
+	pumpCommandMu sync.Mutex
 	// defaultDeviceID dipakai untuk petak yang belum punya ID perangkat sendiri
 	// (ICARE_DEFAULT_DEVICE_ID), sehingga dashboard tidak jatuh ke data demo.
 	defaultDeviceID string
@@ -228,6 +260,7 @@ func newAppWithDBAndFirebase(db *sql.DB, firebase *firebaseRTDB) (*App, error) {
 	app.mux.HandleFunc("POST /plots", app.addPlot)
 	app.mux.HandleFunc("POST /pump/mode", app.setPumpMode)
 	app.mux.HandleFunc("POST /pump/toggle", app.togglePump)
+	app.mux.HandleFunc("GET /ws/device", app.deviceWebSocket)
 
 	return app, nil
 }
@@ -269,6 +302,170 @@ func (a *App) health(w http.ResponseWriter, _ *http.Request) {
 	_, _ = w.Write([]byte("ok\n"))
 }
 
+type deviceRealtimeMessage struct {
+	Type     string          `json:"type"`
+	Path     string          `json:"path,omitempty"`
+	Data     json.RawMessage `json:"data,omitempty"`
+	Activity *Activity       `json:"activity,omitempty"`
+	Message  string          `json:"message,omitempty"`
+}
+
+var deviceWebSocketUpgrader = websocket.Upgrader{
+	ReadBufferSize:  1024,
+	WriteBufferSize: 1024,
+}
+
+func (a *App) deviceWebSocket(w http.ResponseWriter, r *http.Request) {
+	user, authenticated, err := a.currentUser(r)
+	if err != nil {
+		http.Error(w, "Akun tidak dapat diperiksa. Coba lagi.", http.StatusInternalServerError)
+		return
+	}
+	if !authenticated {
+		http.Error(w, "Sesi login diperlukan.", http.StatusUnauthorized)
+		return
+	}
+	plot, hasDevice, err := a.selectedDevicePlot(user, r)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			http.NotFound(w, r)
+			return
+		}
+		http.Error(w, "Petak tidak dapat diperiksa.", http.StatusInternalServerError)
+		return
+	}
+	if !hasDevice || a.firebase == nil || !a.firebase.ready() {
+		http.Error(w, "Perangkat Firebase tidak tersedia.", http.StatusServiceUnavailable)
+		return
+	}
+
+	conn, err := deviceWebSocketUpgrader.Upgrade(w, r, nil)
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+	conn.SetReadLimit(1024)
+	_ = conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+	conn.SetPongHandler(func(string) error {
+		return conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+	})
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+	go func() {
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				cancel()
+				return
+			}
+		}
+	}()
+
+	updates := make(chan deviceRealtimeMessage, 16)
+	streamErrors := make(chan error, 3)
+	enqueue := func(message deviceRealtimeMessage) error {
+		select {
+		case updates <- message:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	startStream := func(branch string, query url.Values, handle func(firebaseStreamEvent) error) {
+		go func() {
+			if err := a.firebase.streamDeviceBranch(ctx, plot.DeviceID, branch, query, handle); err != nil && ctx.Err() == nil {
+				select {
+				case streamErrors <- fmt.Errorf("Firebase %s stream: %w", branch, err):
+				case <-ctx.Done():
+				}
+			}
+		}()
+	}
+
+	telemetryHandler := func(messageType string) func(firebaseStreamEvent) error {
+		return func(event firebaseStreamEvent) error {
+			if event.Type == "cancel" || event.Type == "auth_revoked" {
+				return fmt.Errorf("Firebase %s stream was cancelled", messageType)
+			}
+			if event.Type != "put" && event.Type != "patch" {
+				return nil
+			}
+			return enqueue(deviceRealtimeMessage{Type: messageType, Path: event.Path, Data: event.Data})
+		}
+	}
+	startStream("data_terkini", nil, telemetryHandler("telemetry"))
+	startStream("status_pompa", nil, telemetryHandler("pump"))
+
+	historyQuery := url.Values{
+		"orderBy":     {`"$key"`},
+		"limitToLast": {"1"},
+	}
+	startStream("riwayat", historyQuery, func(event firebaseStreamEvent) error {
+		if event.Type == "cancel" || event.Type == "auth_revoked" {
+			return errors.New("Firebase history stream was cancelled")
+		}
+		if event.Type != "put" && event.Type != "patch" {
+			return nil
+		}
+		activity, ok := activityFromStreamEvent(event)
+		if !ok {
+			return nil
+		}
+		return enqueue(deviceRealtimeMessage{Type: "history", Activity: &activity})
+	})
+
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case message := <-updates:
+			_ = conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+			if err := conn.WriteJSON(message); err != nil {
+				return
+			}
+		case err := <-streamErrors:
+			log.Printf("device realtime stream %q: %v", plot.DeviceID, err)
+			_ = conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+			_ = conn.WriteJSON(deviceRealtimeMessage{Type: "error", Message: "Koneksi realtime Firebase terputus."})
+			return
+		case <-ticker.C:
+			if err := conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(10*time.Second)); err != nil {
+				return
+			}
+		}
+	}
+}
+
+func activityFromStreamEvent(event firebaseStreamEvent) (Activity, bool) {
+	var records map[string]deviceEvent
+	switch {
+	case event.Path == "/" || event.Path == "":
+		if err := json.Unmarshal(event.Data, &records); err != nil {
+			return Activity{}, false
+		}
+	case strings.Count(strings.Trim(event.Path, "/"), "/") == 0:
+		key := strings.Trim(event.Path, "/")
+		var record deviceEvent
+		if err := json.Unmarshal(event.Data, &record); err != nil {
+			return Activity{}, false
+		}
+		return activityFromDeviceEvent(key, record), true
+	default:
+		return Activity{}, false
+	}
+	var key string
+	for candidate := range records {
+		if candidate > key {
+			key = candidate
+		}
+	}
+	if key == "" {
+		return Activity{}, false
+	}
+	return activityFromDeviceEvent(key, records[key]), true
+}
+
 func (a *App) dashboard(w http.ResponseWriter, r *http.Request) {
 	user, ok := a.requireUser(w, r)
 	if !ok {
@@ -283,7 +480,7 @@ func (a *App) dashboard(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	a.loadDeviceData(r.Context(), &data)
+	a.loadDeviceData(r.Context(), &data, "latest", "")
 	a.render(w, "dashboard", data)
 }
 
@@ -463,7 +660,34 @@ func (a *App) history(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	a.loadDeviceData(r.Context(), &data)
+	before := r.URL.Query().Get("before")
+	after := r.URL.Query().Get("after")
+	if before != "" && after != "" {
+		http.Error(w, "Gunakan satu cursor riwayat saja.", http.StatusBadRequest)
+		return
+	}
+	if (before != "" && !validFirebaseKey(before)) || (after != "" && !validFirebaseKey(after)) {
+		http.Error(w, "Cursor riwayat tidak valid.", http.StatusBadRequest)
+		return
+	}
+	page := 1
+	if rawPage := r.URL.Query().Get("page"); rawPage != "" {
+		parsedPage, err := strconv.Atoi(rawPage)
+		if err != nil || parsedPage < 1 {
+			http.Error(w, "Halaman riwayat tidak valid.", http.StatusBadRequest)
+			return
+		}
+		page = parsedPage
+	}
+	direction, cursor := "latest", ""
+	if before != "" {
+		direction, cursor = "before", before
+	} else if after != "" {
+		direction, cursor = "after", after
+	}
+	data.HistoryPage = page
+	data.HistoryPageSize = firebaseHistoryPageSize
+	a.loadDeviceData(r.Context(), &data, direction, cursor)
 	a.render(w, "history", data)
 }
 
@@ -481,7 +705,7 @@ func (a *App) devices(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	a.loadDeviceData(r.Context(), &data)
+	a.loadDeviceData(r.Context(), &data, "", "")
 	a.render(w, "devices", data)
 }
 
@@ -568,15 +792,22 @@ func (a *App) setPumpMode(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Mode pompa tidak valid.", http.StatusBadRequest)
 		return
 	}
-	if _, hasDevice, err := a.selectedDevicePlot(user, r); err != nil {
+	plot, hasDevice, err := a.selectedDevicePlot(user, r)
+	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			http.NotFound(w, r)
 			return
 		}
 		http.Error(w, "Petak tidak dapat diperiksa.", http.StatusInternalServerError)
 		return
-	} else if hasDevice {
-		http.Error(w, "Skema perintah pompa belum tersedia pada data perangkat Firebase.", http.StatusNotImplemented)
+	}
+	if hasDevice {
+		a.pumpCommandMu.Lock()
+		defer a.pumpCommandMu.Unlock()
+		a.sendFirebasePumpCommand(w, r, plot, devicePumpDesiredUpdate{
+			AutoMode:    boolPointer(mode == "auto"),
+			UpdatedAtMS: time.Now().UnixMilli(),
+		}, mode, nil, false, nil)
 		return
 	}
 
@@ -598,15 +829,57 @@ func (a *App) togglePump(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if _, hasDevice, err := a.selectedDevicePlot(user, r); err != nil {
+	plot, hasDevice, err := a.selectedDevicePlot(user, r)
+	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			http.NotFound(w, r)
 			return
 		}
 		http.Error(w, "Petak tidak dapat diperiksa.", http.StatusInternalServerError)
 		return
-	} else if hasDevice {
-		http.Error(w, "Skema perintah pompa belum tersedia pada data perangkat Firebase.", http.StatusNotImplemented)
+	}
+	if hasDevice {
+		a.pumpCommandMu.Lock()
+		defer a.pumpCommandMu.Unlock()
+		if a.firebase == nil || !a.firebase.canWrite() {
+			a.pumpCommandError(w, r, http.StatusServiceUnavailable, "Akun Firebase tidak memiliki akses tulis untuk kontrol pompa.")
+			return
+		}
+		snapshot, err := a.firebase.getDevice(r.Context(), plot.DeviceID)
+		if err != nil {
+			log.Printf("read Firebase pump state %q before command: %v", plot.DeviceID, err)
+			a.pumpCommandError(w, r, http.StatusBadGateway, "Status pompa tidak dapat diverifikasi dari Firebase.")
+			return
+		}
+		if snapshot.Desired == nil || snapshot.Desired.AutoMode == nil || snapshot.Desired.RelayOn == nil {
+			a.pumpCommandError(w, r, http.StatusConflict, "Node devices/"+plot.DeviceID+"/desired belum memiliki autoMode dan relayOn.")
+			return
+		}
+		if snapshot.Pump == nil || snapshot.Pump.UpdatedAtMS <= snapshot.Desired.UpdatedAtMS {
+			a.pumpCommandError(w, r, http.StatusConflict, "Perangkat belum mengonfirmasi perintah sebelumnya dari Firebase.")
+			return
+		}
+		if snapshot.Pump == nil || normalizeDeviceMode(snapshot.Pump.Mode) != "manual" {
+			a.pumpCommandError(w, r, http.StatusConflict, "Ubah pompa ke mode manual dan tunggu konfirmasi Firebase sebelum mengubah status relay.")
+			return
+		}
+		var currentPump *bool
+		if snapshot.Pump != nil {
+			currentPump = snapshot.Pump.PumpOn
+		}
+		if currentPump == nil && snapshot.Latest != nil {
+			currentPump = snapshot.Latest.PumpOn
+		}
+		if currentPump == nil {
+			a.pumpCommandError(w, r, http.StatusConflict, "Status pompa belum tersedia di Firebase.")
+			return
+		}
+		targetPump := !*currentPump
+		a.sendFirebasePumpCommand(w, r, plot, devicePumpDesiredUpdate{
+			AutoMode:    boolPointer(false),
+			RelayOn:     boolPointer(targetPump),
+			UpdatedAtMS: time.Now().UnixMilli(),
+		}, "manual", boolPointer(targetPump), true, &snapshot)
 		return
 	}
 	a.mu.Lock()
@@ -618,6 +891,121 @@ func (a *App) togglePump(w http.ResponseWriter, r *http.Request) {
 	a.addEventLocked(description, modeLabel(a.state.Mode))
 	a.mu.Unlock()
 	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+type pumpCommandResult struct {
+	Status         string `json:"status"`
+	UpdatedAtMS    int64  `json:"updatedAtMs"`
+	ExpectedMode   string `json:"expectedMode"`
+	ExpectedPumpOn *bool  `json:"expectedPumpOn,omitempty"`
+}
+
+func (a *App) sendFirebasePumpCommand(w http.ResponseWriter, r *http.Request, plot Plot, update devicePumpDesiredUpdate, expectedMode string, expectedPump *bool, requireManualMode bool, snapshot *deviceSnapshot) {
+	if a.firebase == nil || !a.firebase.canWrite() {
+		a.pumpCommandError(w, r, http.StatusServiceUnavailable, "Akun Firebase tidak memiliki akses tulis untuk kontrol pompa.")
+		return
+	}
+	if snapshot == nil {
+		loaded, loadErr := a.firebase.getDevice(r.Context(), plot.DeviceID)
+		if loadErr != nil {
+			log.Printf("read Firebase desired pump state %q: %v", plot.DeviceID, loadErr)
+			a.pumpCommandError(w, r, http.StatusBadGateway, "Status perangkat tidak dapat diverifikasi dari Firebase.")
+			return
+		}
+		snapshot = &loaded
+	}
+	if snapshot.Desired == nil || snapshot.Desired.AutoMode == nil || snapshot.Desired.RelayOn == nil {
+		a.pumpCommandError(w, r, http.StatusConflict, "Node devices/"+plot.DeviceID+"/desired belum memiliki autoMode dan relayOn.")
+		return
+	}
+	if snapshot.Pump == nil || snapshot.Pump.UpdatedAtMS <= snapshot.Desired.UpdatedAtMS {
+		a.pumpCommandError(w, r, http.StatusConflict, "Perangkat belum mengonfirmasi perintah sebelumnya dari Firebase.")
+		return
+	}
+	if expectedMode == "manual" && expectedPump == nil {
+		currentPump := snapshot.Latest.PumpOn
+		if currentPump == nil && snapshot.Pump != nil {
+			currentPump = snapshot.Pump.PumpOn
+		}
+		if currentPump == nil {
+			a.pumpCommandError(w, r, http.StatusConflict, "Status pompa belum tersedia untuk mempertahankan kondisi relay saat beralih ke mode manual.")
+			return
+		}
+		update.RelayOn = boolPointer(*currentPump)
+		expectedPump = boolPointer(*currentPump)
+	}
+	if requireManualMode {
+		if snapshot.Pump == nil || normalizeDeviceMode(snapshot.Pump.Mode) != "manual" {
+			a.pumpCommandError(w, r, http.StatusConflict, "Mode perangkat telah berubah; status pompa harus dikonfirmasi dalam mode manual.")
+			return
+		}
+		var currentPump *bool
+		if snapshot.Pump != nil {
+			currentPump = snapshot.Pump.PumpOn
+		}
+		if currentPump == nil && snapshot.Latest != nil {
+			currentPump = snapshot.Latest.PumpOn
+		}
+		if expectedPump == nil || currentPump == nil || *currentPump == *expectedPump {
+			a.pumpCommandError(w, r, http.StatusConflict, "Status pompa telah berubah. Muat ulang dashboard sebelum mengirim perintah.")
+			return
+		}
+	}
+	if err := a.firebase.updateDeviceDesired(r.Context(), plot.DeviceID, update); err != nil {
+		log.Printf("write Firebase desired pump state %q: %v", plot.DeviceID, err)
+		a.pumpCommandError(w, r, http.StatusBadGateway, "Perintah pompa gagal dikirim ke Firebase.")
+		return
+	}
+	result := pumpCommandResult{
+		Status:         "pending",
+		UpdatedAtMS:    update.UpdatedAtMS,
+		ExpectedMode:   expectedMode,
+		ExpectedPumpOn: expectedPump,
+	}
+	if acceptsJSON(r) {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusAccepted)
+		if err := json.NewEncoder(w).Encode(result); err != nil {
+			log.Printf("write pump command response: %v", err)
+		}
+		return
+	}
+	location := "/"
+	if r.FormValue("petak") != "" {
+		location += "?petak=" + url.QueryEscape(r.FormValue("petak"))
+	}
+	http.Redirect(w, r, location, http.StatusSeeOther)
+}
+
+func (a *App) pumpCommandError(w http.ResponseWriter, r *http.Request, status int, message string) {
+	if acceptsJSON(r) {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(status)
+		if err := json.NewEncoder(w).Encode(map[string]string{"error": message}); err != nil {
+			log.Printf("write pump command error response: %v", err)
+		}
+		return
+	}
+	http.Error(w, message, status)
+}
+
+func acceptsJSON(r *http.Request) bool {
+	return strings.Contains(r.Header.Get("Accept"), "application/json")
+}
+
+func boolPointer(value bool) *bool {
+	return &value
+}
+
+func normalizeDeviceMode(mode string) string {
+	switch strings.ToUpper(strings.TrimSpace(mode)) {
+	case "MANUAL":
+		return "manual"
+	case "AUTO", "OTOMATIS":
+		return "auto"
+	default:
+		return ""
+	}
 }
 
 func (a *App) currentUser(r *http.Request) (User, bool, error) {
@@ -702,6 +1090,7 @@ func (a *App) pageData(user User, active string) (PageData, error) {
 	if name == "" {
 		name = "User"
 	}
+	chartNow := time.Now()
 	data := PageData{
 		Title:       active,
 		Active:      active,
@@ -709,7 +1098,7 @@ func (a *App) pageData(user User, active string) (PageData, error) {
 		UserName:    name,
 		UserEmail:   user.Email,
 		Initials:    initials(name),
-		Today:       indonesianDate(time.Now()),
+		Today:       indonesianDate(chartNow),
 		WaterLevel:  state.WaterLevel,
 		FlowRate:    state.FlowRate,
 		FlowPercent: state.FlowRate / 120 * 100,
@@ -719,11 +1108,13 @@ func (a *App) pageData(user User, active string) (PageData, error) {
 			".",
 			",",
 		),
-		PumpOn:      state.PumpOn,
-		Mode:        state.Mode,
-		ModeLabel:   modeLabel(state.Mode),
-		ChartPoints: makeChartPoints([]float64{43, 58, 74, 64, 87, 93, 81, 100, 96, state.WaterLevel}),
-		Events:      events,
+		PumpOn:       state.PumpOn,
+		Mode:         state.Mode,
+		ModeLabel:    modeLabel(state.Mode),
+		ChartPoints:  makeChartPoints([]float64{43, 58, 74, 64, 87, 93, 81, 100, 96, state.WaterLevel}),
+		ChartStartMS: chartNow.Add(-24 * time.Hour).UnixMilli(),
+		ChartLabels:  chartTimeLabels(chartNow),
+		Events:       events,
 	}
 	if len(plots) > 0 {
 		data.Petak = plots[0].Name
@@ -731,12 +1122,14 @@ func (a *App) pageData(user User, active string) (PageData, error) {
 	return data, nil
 }
 
-func (a *App) loadDeviceData(ctx context.Context, data *PageData) {
+func (a *App) loadDeviceData(ctx context.Context, data *PageData, historyDirection, historyCursor string) {
 	plot := findPlot(data.Petaks, data.Petak)
 	if plot.DeviceID == "" {
 		return
 	}
 	data.LinkedDeviceID = plot.DeviceID
+	data.Events = nil
+	data.ChartPoints = ""
 	if a.firebase == nil || !a.firebase.ready() {
 		data.DeviceError = "Akses Firebase membutuhkan token autentikasi; data perangkat tidak tersedia."
 		return
@@ -755,6 +1148,8 @@ func (a *App) loadDeviceData(ctx context.Context, data *PageData) {
 	data.FlowCalibrated = latest.FlowCalibrated
 	data.LoRaOnline = latest.LoRaOnline
 	data.SensorSeen = latest.SensorConnected
+	data.SensorValid = latest.SensorValid
+	data.DataFresh = latest.DataFresh
 	if latest.DistanceCM != nil && *latest.DistanceCM >= 0 && latest.SensorConnected && latest.SensorValid && latest.DataFresh {
 		data.SensorAvailable = true
 		data.DistanceCM = *latest.DistanceCM
@@ -780,6 +1175,7 @@ func (a *App) loadDeviceData(ctx context.Context, data *PageData) {
 		uploaded = latest.ReceivedAtMS
 	}
 	if uploaded > 0 {
+		data.LastUpdateMS = uploaded
 		uploadedAt := time.UnixMilli(uploaded)
 		data.LastUpdate = uploadedAt.In(time.FixedZone("WITA", 8*60*60)).Format("02/01/2006 15.04.05") + " WITA"
 		age := time.Since(uploadedAt)
@@ -796,65 +1192,178 @@ func (a *App) loadDeviceData(ctx context.Context, data *PageData) {
 		// Gateway mengunggah berkala; tidak ada pembaruan >3 menit berarti gateway/ESP offline.
 		data.DeviceStale = age > 3*time.Minute
 	}
-	if latest.PumpOn != nil {
-		data.PumpOn = *latest.PumpOn
-		data.PumpStatusAvailable = true
-	} else if snapshot.Pump != nil && snapshot.Pump.PumpOn != nil {
+	if snapshot.Pump != nil && snapshot.Pump.PumpOn != nil {
 		data.PumpOn = *snapshot.Pump.PumpOn
+		data.PumpStatusAvailable = true
+	} else if latest.PumpOn != nil {
+		data.PumpOn = *latest.PumpOn
 		data.PumpStatusAvailable = true
 	}
 	data.ModeLabel = "Tidak tersedia"
 	if snapshot.Pump != nil {
 		data.ConfigFresh = snapshot.Pump.ConfigActive
 		data.ConfigReason = snapshot.Pump.StatusReason
+		if snapshot.Pump.AutoOffCM != nil && snapshot.Pump.AutoOnCM != nil &&
+			finite(*snapshot.Pump.AutoOffCM) && finite(*snapshot.Pump.AutoOnCM) &&
+			*snapshot.Pump.AutoOffCM >= 0 && *snapshot.Pump.AutoOnCM >= 0 {
+			data.AutoThresholdAvailable = true
+			data.AutoOffDistanceCM = *snapshot.Pump.AutoOffCM
+			data.AutoOnDistanceCM = *snapshot.Pump.AutoOnCM
+		}
 		if snapshot.Pump.Mode != "" {
-			data.ModeLabel = snapshot.Pump.Mode
-		}
-	}
-	history := make([]deviceEvent, 0, len(snapshot.History))
-	for _, event := range snapshot.History {
-		history = append(history, event)
-	}
-	sort.SliceStable(history, func(i, j int) bool {
-		return history[i].TimestampMS > history[j].TimestampMS
-	})
-	data.Events = make([]Activity, 0, len(history))
-	for _, event := range history {
-		when := event.LocalTime
-		if when == "" && event.TimestampMS > 0 {
-			when = time.UnixMilli(event.TimestampMS).In(time.FixedZone("WITA", 8*60*60)).Format("02/01/2006 15.04.05")
-		}
-		var details []string
-		if event.StatusReason != "" {
-			details = append(details, event.StatusReason)
-		}
-		if event.Fault != "" && event.Fault != event.StatusReason {
-			details = append(details, event.Fault)
-		}
-		if event.SensorStatus != "" && event.SensorStatus != event.Fault {
-			details = append(details, "Sensor "+event.SensorStatus)
-		}
-		if event.WaterHeightCM != nil && finite(*event.WaterHeightCM) {
-			details = append(details, fmt.Sprintf("Tinggi air %.1f cm", *event.WaterHeightCM))
-		}
-		if event.PumpOn != nil {
-			if *event.PumpOn {
-				details = append(details, "Pompa menyala")
+			data.Mode = normalizeDeviceMode(snapshot.Pump.Mode)
+			if data.Mode != "" {
+				data.ModeLabel = modeLabel(data.Mode)
 			} else {
-				details = append(details, "Pompa mati")
+				data.ModeLabel = snapshot.Pump.Mode
 			}
 		}
-		if event.Trigger != "" {
-			details = append(details, event.Trigger)
-		}
-		description := strings.Join(details, " · ")
-		data.Events = append(data.Events, Activity{
-			Time:        when,
-			Description: description,
-			Mode:        event.Mode,
-		})
 	}
-	data.ChartPoints = ""
+	if data.AutoThresholdAvailable && latest.DistanceCM != nil && latest.WaterHeightCM != nil &&
+		finite(*latest.DistanceCM) && finite(*latest.WaterHeightCM) &&
+		*latest.DistanceCM >= 0 && *latest.WaterHeightCM >= 0 &&
+		latest.SensorConnected && latest.SensorValid && latest.DataFresh {
+		referenceHeight := *latest.DistanceCM + *latest.WaterHeightCM
+		offWaterHeight := referenceHeight - data.AutoOffDistanceCM
+		onWaterHeight := referenceHeight - data.AutoOnDistanceCM
+		if finite(offWaterHeight) && finite(onWaterHeight) && offWaterHeight >= 0 && offWaterHeight <= 100 && onWaterHeight >= 0 && onWaterHeight <= 100 {
+			data.AutoChartThresholds = true
+			data.AutoOffChartY = chartYFromWaterHeight(offWaterHeight)
+			data.AutoOnChartY = chartYFromWaterHeight(onWaterHeight)
+		}
+	}
+	data.DeviceWriteAvailable = a.firebase.canWrite()
+	if snapshot.Desired != nil {
+		data.DesiredUpdatedAtMS = snapshot.Desired.UpdatedAtMS
+		data.DesiredStateAvailable = snapshot.Desired.AutoMode != nil && snapshot.Desired.RelayOn != nil
+	}
+	data.DeviceControlPending = data.DesiredStateAvailable &&
+		snapshot.Desired.UpdatedAtMS > 0 &&
+		snapshot.Pump != nil &&
+		snapshot.Pump.UpdatedAtMS <= snapshot.Desired.UpdatedAtMS
+	data.DeviceControlAvailable = data.DeviceWriteAvailable &&
+		data.DesiredStateAvailable &&
+		snapshot.Desired.UpdatedAtMS > 0 &&
+		snapshot.Pump != nil &&
+		snapshot.Pump.UpdatedAtMS > snapshot.Desired.UpdatedAtMS
+	if historyDirection == "" {
+		return
+	}
+	history, err := a.firebase.getDeviceHistory(ctx, plot.DeviceID, historyDirection, historyCursor)
+	if err != nil {
+		log.Printf("read Firebase device history %q: %v", plot.DeviceID, err)
+		data.DeviceError = "Riwayat perangkat tidak dapat dimuat dari Firebase."
+		data.Events = nil
+		data.ChartPoints = ""
+		return
+	}
+	data.Events = make([]Activity, 0, len(history.Records))
+	for _, record := range history.Records {
+		data.Events = append(data.Events, activityFromDeviceEvent(record.Key, record.Event))
+	}
+	data.ChartPoints = makeDeviceChartPoints(data.Events, time.UnixMilli(data.ChartStartMS))
+	if data.Active == "Beranda" && len(data.Events) > 5 {
+		data.Events = data.Events[:5]
+	}
+	data.HistoryPageSize = firebaseHistoryPageSize
+	data.HistoryOlderCursor = history.OldestKey
+	data.HistoryNewerCursor = history.NewestKey
+	data.HasOlderHistory = history.HasOlder
+	data.HasNewerHistory = history.HasNewer
+	if history.HasOlder {
+		data.OlderPage = data.HistoryPage + 1
+	}
+	if history.HasNewer {
+		data.NewerPage = data.HistoryPage - 1
+	}
+}
+
+func activityFromDeviceEvent(key string, event deviceEvent) Activity {
+	when := event.LocalTime
+	if when == "" && event.TimestampMS > 0 {
+		when = time.UnixMilli(event.TimestampMS).In(time.FixedZone("WITA", 8*60*60)).Format("02/01/2006 15.04.05")
+	}
+	var details []string
+	if event.StatusReason != "" {
+		details = append(details, event.StatusReason)
+	}
+	if event.Fault != "" && event.Fault != event.StatusReason {
+		details = append(details, event.Fault)
+	}
+	if event.SensorStatus != "" && event.SensorStatus != event.Fault {
+		details = append(details, "Sensor "+event.SensorStatus)
+	}
+	if event.WaterHeightCM != nil && finite(*event.WaterHeightCM) {
+		details = append(details, fmt.Sprintf("Tinggi air %.1f cm", *event.WaterHeightCM))
+	}
+	if event.PumpOn != nil {
+		if *event.PumpOn {
+			details = append(details, "Pompa menyala")
+		} else {
+			details = append(details, "Pompa mati")
+		}
+	}
+	if event.Trigger != "" {
+		details = append(details, event.Trigger)
+	}
+	activity := Activity{
+		Key:         key,
+		Time:        when,
+		Description: strings.Join(details, " · "),
+		Mode:        event.Mode,
+		TimestampMS: event.TimestampMS,
+	}
+	if event.WaterHeightCM != nil && finite(*event.WaterHeightCM) {
+		activity.WaterHeightCM = *event.WaterHeightCM
+		activity.WaterHeightAvailable = true
+	}
+	return activity
+}
+
+func makeDeviceChartPoints(events []Activity, start time.Time) string {
+	const window = 24 * time.Hour
+	const width = 720.0
+	const height = 140.0
+	const top = 10.0
+	now := start.Add(window)
+	points := make([]Activity, 0, len(events))
+	for _, event := range events {
+		if event.TimestampMS <= 0 || !event.WaterHeightAvailable {
+			continue
+		}
+		eventTime := time.UnixMilli(event.TimestampMS)
+		if eventTime.Before(start) || eventTime.After(now) {
+			continue
+		}
+		points = append(points, event)
+	}
+	sort.Slice(points, func(i, j int) bool { return points[i].TimestampMS < points[j].TimestampMS })
+	if len(points) == 0 {
+		return ""
+	}
+	var result strings.Builder
+	for i, event := range points {
+		x := float64(time.UnixMilli(event.TimestampMS).Sub(start)) / float64(window) * width
+		value := math.Max(0, math.Min(100, event.WaterHeightCM))
+		y := top + height*(1-value/100)
+		if i > 0 {
+			result.WriteByte(' ')
+		}
+		result.WriteString(strconv.FormatFloat(x, 'f', 1, 64))
+		result.WriteByte(',')
+		result.WriteString(strconv.FormatFloat(y, 'f', 1, 64))
+	}
+	if len(points) == 1 {
+		result.WriteString(" ")
+		event := points[0]
+		x := float64(time.UnixMilli(event.TimestampMS).Sub(start))/float64(window)*width + 1
+		value := math.Max(0, math.Min(100, event.WaterHeightCM))
+		y := top + height*(1-value/100)
+		result.WriteString(strconv.FormatFloat(x, 'f', 1, 64))
+		result.WriteByte(',')
+		result.WriteString(strconv.FormatFloat(y, 'f', 1, 64))
+	}
+	return result.String()
 }
 
 func findPlot(plots []Plot, name string) Plot {
@@ -1050,6 +1559,23 @@ func makeChartPoints(values []float64) string {
 		points.WriteString(strconv.FormatFloat(y, 'f', 1, 64))
 	}
 	return points.String()
+}
+
+func chartYFromWaterHeight(value float64) float64 {
+	const top = 10.0
+	const height = 140.0
+	value = math.Max(0, math.Min(100, value))
+	return top + height*(1-value/100)
+}
+
+func chartTimeLabels(now time.Time) []string {
+	location := time.FixedZone("WITA", 8*60*60)
+	start := now.In(location).Add(-24 * time.Hour)
+	labels := make([]string, 0, 5)
+	for index := 0; index < 4; index++ {
+		labels = append(labels, start.Add(time.Duration(index)*6*time.Hour).Format("15.04"))
+	}
+	return append(labels, "Sekarang")
 }
 
 func initials(name string) string {

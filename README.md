@@ -1,6 +1,6 @@
 # iCare Web
 
-Prototipe web iCare untuk pemantauan irigasi sawah. Backend dan HTML server-rendered menggunakan Go standard library, dengan Firebase Realtime Database sebagai layanan data perangkat.
+Prototipe web iCare untuk pemantauan irigasi sawah. Backend dan HTML server-rendered menggunakan Go, dengan Firebase Realtime Database sebagai layanan data perangkat.
 
 ## Menjalankan
 
@@ -14,11 +14,15 @@ Buka `http://127.0.0.1:18081`, lalu buat akun dari halaman **Daftar gratis**. Se
 
 - Halaman masuk dan pendaftaran dengan validasi formulir serta kata sandi yang di-hash.
 - Dashboard dan halaman Perangkat membaca status terbaru dari Firebase Realtime Database untuk petak yang memiliki ID perangkat.
+- Halaman Riwayat mengambil maksimal 50 catatan per halaman di server menggunakan cursor Firebase; halaman berikut/sebelumnya tidak memuat seluruh riwayat.
+- Dashboard menampilkan grafik pembacaan tinggi air 24 jam dan lima aktivitas terakhir dari riwayat perangkat.
+- Dashboard dan Riwayat menerima pembaruan Firebase lewat WebSocket; nilai sensor, status koneksi/node/pompa, waktu pembaruan, grafik, dan aktivitas diperbarui tanpa memuat ulang halaman.
 - Navigasi Beranda, Riwayat, Perangkat, dan Profil.
 - Petak disimpan bersama ID perangkat Firebase opsional.
 - Akun dan data petak disimpan di SQLite (`icare.db` secara default); lokasi file dapat diubah dengan `ICARE_DB_PATH`.
 - Tab Notifikasi dan Pengaturan pada sidebar adalah placeholder visual dengan efek hover.
-- Kontrol mode/pompa masih simulasi hanya untuk petak tanpa perangkat tertaut. Untuk perangkat tertaut, kontrol dinonaktifkan sampai format node perintah yang dibaca firmware diketahui.
+- Kontrol mode/pompa simulasi tersedia untuk petak tanpa perangkat tertaut. Perangkat Firebase menggunakan node `desired`; kontrol relay hanya aktif pada mode manual dan setelah status pompa tersedia.
+- Tombol dinonaktifkan selama perintah dikirim dan tetap menunggu konfirmasi terbaru dari `status_pompa` sebelum bisa digunakan kembali.
 - Tampilan responsif untuk desktop dan ponsel.
 
 ## Firebase Realtime Database
@@ -46,6 +50,11 @@ Backend membaca Firebase Realtime Database REST API mengikuti ekspor perangkat:
         "total_volume_liter": 0,
         "waktu_update_server": 1795079698126
       },
+      "desired": {
+        "autoMode": true,
+        "relayOn": true,
+        "updatedAtMs": 1795089466821
+      },
       "riwayat": {
         "-P6n4ZTLy3TdF0I-nnOP": {
           "id_node": "NODE_01",
@@ -60,8 +69,9 @@ Backend membaca Firebase Realtime Database REST API mengikuti ekspor perangkat:
         }
       },
       "status_pompa": {
+        "batas_mati_otomatis_cm": 70,
+        "batas_nyala_otomatis_cm": 90,
         "keterangan_status": "MISSING_CONFIG",
-        "konfigurasi_aktif": false,
         "mode_operasi": "MENUNGGU_KONFIGURASI",
         "pompa_menyala": false,
         "sensor_siap": true,
@@ -72,9 +82,13 @@ Backend membaca Firebase Realtime Database REST API mengikuti ekspor perangkat:
 }
 ```
 
-Path perangkat mengikuti struktur ekspor: `devices/{deviceID}/data_terkini`, `devices/{deviceID}/riwayat`, dan `devices/{deviceID}/status_pompa`; ID perangkat pada ekspor adalah `ESP32_Gateway`. Jarak sensor hanya ditampilkan saat `sensor_air_valid` dan `data_air_terbaru` bernilai true. Riwayat ditampilkan di halaman Riwayat dan berisi status, mode operasi, pemicu pencatatan, serta ketinggian air jika tersedia. Status pompa dibaca dari `data_terkini.pompa_menyala`, dengan `status_pompa.pompa_menyala` sebagai cadangan. Ekspor tidak menyertakan jalur perintah yang dibaca firmware; aplikasi tidak menulis ke Firebase dan kontrol pompa/mode perangkat tetap dinonaktifkan.
+Path perangkat mengikuti struktur ekspor: `devices/{deviceID}/data_terkini`, `devices/{deviceID}/desired`, `devices/{deviceID}/riwayat`, dan `devices/{deviceID}/status_pompa`; ID perangkat pada ekspor adalah `ESP32_Gateway`. Jarak sensor hanya ditampilkan saat `sensor_air_valid` dan `data_air_terbaru` bernilai true. Halaman Riwayat meminta hingga 50 catatan per halaman dari Firebase, diurutkan dengan key Realtime Database dan dinavigasi menggunakan cursor. Dashboard menggambar titik tinggi air pada 24 jam terakhir dan menampilkan lima aktivitas terbaru. Status pompa dibaca dari `data_terkini.pompa_menyala`, dengan `status_pompa.pompa_menyala` sebagai cadangan. Nilai mode saat ini dan batas pompa otomatis dibaca dari `status_pompa`.
 
-Tambahkan ID `ESP32_Gateway` pada petak di Beranda agar aplikasi membaca perangkat ini. Ekspor tidak menyertakan node atau format perintah yang dibaca firmware. Karena itu aplikasi hanya membaca Firebase dan kontrol pompa/mode perangkat sengaja dinonaktifkan sampai format perintah tersebut diketahui.
+Kontrol perangkat menggunakan struktur `desired` yang diekspor Firebase: mode otomatis/manual ditulis ke `desired.autoMode`, status relay manual ke `desired.relayOn`, dan setiap perintah menyertakan `desired.updatedAtMs`. Update dilakukan dengan PATCH agar field lain tidak tertimpa. Mode relay hanya bisa diubah setelah perangkat melaporkan mode `MANUAL`; setelah pengiriman, tombol menunggu `status_pompa.waktu_update_server` yang lebih baru dan status mode/relay sesuai target. Backend memerlukan kredensial autentikasi Firebase dengan izin `.write`; akses baca anonim tidak pernah digunakan untuk menulis.
+
+Dashboard dan Riwayat membuka WebSocket terautentikasi ke backend. Backend meneruskan Firebase Realtime Database streaming event untuk `data_terkini`, `status_pompa`, dan satu catatan riwayat terbaru; token Firebase tetap berada di server.
+
+Tambahkan ID `ESP32_Gateway` pada petak di Beranda agar aplikasi membaca dan mengontrol perangkat ini.
 
 Saat startup, aplikasi memuat `.env` dari direktori project tanpa menimpa environment variable yang sudah disetel. Untuk baca tanpa autentikasi, aktifkan opsi anonim:
 
@@ -100,7 +114,7 @@ Backend login ke Firebase Auth (email/password) di sisi server, menyimpan ID tok
 
 Jika memakai rules yang membatasi UID, jangan aktifkan mode anonim: isi `ICARE_FIREBASE_AUTH_TOKEN` dengan Firebase ID token yang masih berlaku, atau gunakan pasangan API key dan refresh token dari akun dengan UID yang diizinkan.
 
-Tanpa akses baca Firebase atau ID perangkat tertaut, aplikasi memakai fixture lokal (75 cm, 85 L/mnt, dan 1,2 bar) serta simulasi pompa. Grafik historis 24 jam belum tersedia; data dari node `riwayat` dapat dilihat pada halaman Riwayat. Sesi, akun, petak, dan aktivitas simulasi masih dikelola lokal; sesi berakhir saat server dimulai ulang. Prototipe ini tidak ditujukan untuk deployment produksi.
+Tanpa akses baca Firebase atau ID perangkat tertaut, aplikasi memakai fixture lokal (75 cm, 85 L/mnt, dan 1,2 bar) serta simulasi pompa. Sesi, akun, petak, dan aktivitas simulasi masih dikelola lokal; sesi berakhir saat server dimulai ulang. Prototipe ini tidak ditujukan untuk deployment produksi.
 
 ## Pemeriksaan
 

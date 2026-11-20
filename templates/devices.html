@@ -19,17 +19,18 @@
     <span class="device-icon" aria-hidden="true">02</span>
     <div><p class="eyebrow">KONTROL IRIGASI</p><h2>Pompa air</h2></div>
     <span class="device-state">{{if and .FirebaseConnected .PumpStatusAvailable}}{{if .PumpOn}}Aktif{{else}}Mati{{end}}{{else if .LinkedDeviceID}}Tidak tersedia{{else}}Simulasi{{end}}</span>
-    <p class="muted">{{if .FirebaseConnected}}Status dibaca dari <code>data_terkini.pompa_menyala</code> atau <code>status_pompa.pompa_menyala</code>. Kontrol belum dapat diaktifkan karena ekspor tidak memuat jalur perintah yang dibaca firmware.{{else if .LinkedDeviceID}}Periksa token akses dan rules Realtime Database.{{else}}Status masih berupa simulasi lokal; tautkan ID perangkat untuk menggunakan Firebase.{{end}}</p>
+    <p class="muted">{{if .FirebaseConnected}}Status dibaca dari <code>data_terkini.pompa_menyala</code> dan <code>status_pompa</code>. {{if .DeviceControlAvailable}}Mode dan relay dapat dikontrol melalui <code>desired.autoMode</code> dan <code>desired.relayOn</code>.{{else if not .DeviceWriteAvailable}}Kontrol memerlukan kredensial Firebase dengan izin tulis.{{else if not .DesiredStateAvailable}}Field <code>desired.autoMode</code> dan <code>desired.relayOn</code> belum tersedia.{{else if .DeviceControlPending}}Perintah sebelumnya masih menunggu konfirmasi perangkat.{{else}}Status waktu perangkat belum tersedia.{{end}}{{else if .LinkedDeviceID}}Periksa token akses dan rules Realtime Database.{{else}}Status masih berupa simulasi lokal; tautkan ID perangkat untuk menggunakan Firebase.{{end}}</p>
   </article>
 </section>
 <section class="card connection-card">
   <h2>Hubungkan perangkat</h2>
-  <p class="muted">{{if .FirebaseConnected}}Snapshot terbaru dimuat dari <code>devices/{{.LinkedDeviceID}}/data_terkini</code>. {{if .DebitAvailable}}Debit terbaca {{printf "%.1f" .DebitLPM}} L/mnt{{if not .FlowCalibrated}} (sensor debit belum dikalibrasi){{end}}.{{else}}Debit belum dikirim.{{end}} Riwayat dan status pompa dibaca dari <code>riwayat</code> dan <code>status_pompa</code>. Tekanan air tidak ada pada snapshot.{{else if .LinkedDeviceID}}Perangkat menggunakan path Realtime Database <code>devices/{{.LinkedDeviceID}}</code>.{{else}}Hubungkan petak dengan mengisi ID perangkat Firebase pada formulir di Beranda.{{end}}</p>
+  <p class="muted">{{if .FirebaseConnected}}Snapshot terbaru dimuat dari <code>devices/{{.LinkedDeviceID}}/data_terkini</code>. {{if .DebitAvailable}}Debit terbaca {{printf "%.1f" .DebitLPM}} L/mnt{{if not .FlowCalibrated}} (sensor debit belum dikalibrasi){{end}}.{{else}}Debit belum dikirim.{{end}} Riwayat, status pompa, dan batas otomatis dibaca dari <code>riwayat</code> dan <code>status_pompa</code>. Perintah kontrol memperbarui <code>desired</code>; aplikasi menunggu status perangkat mengonfirmasi perintah. Tekanan air tidak ada pada snapshot.{{else if .LinkedDeviceID}}Perangkat menggunakan path Realtime Database <code>devices/{{.LinkedDeviceID}}</code>.{{else}}Hubungkan petak dengan mengisi ID perangkat Firebase pada formulir di Beranda.{{end}}</p>
   <div class="connection-details">
     <div><span class="detail-label">Lokasi</span><strong>Sawah · {{.Petak}}</strong></div>
     <div><span class="detail-label">Status LoRa</span><strong>{{if .LoRaOnline}}Online{{else}}Offline{{end}}{{if .RSSIAvailable}} ({{.RSSI}} dBm){{end}}</strong></div>
     <div><span class="detail-label">Update terakhir</span><strong>{{if .LastUpdate}}{{.LastUpdateAgo}} · {{.LastUpdate}}{{else}}Tidak tersedia{{end}}</strong></div>
     <div><span class="detail-label">Konfigurasi perangkat</span><strong>{{if .ConfigFresh}}Diterima{{else if .ConfigReason}}{{.ConfigReason}}{{else}}Tidak tersedia{{end}}</strong></div>
+    <div><span class="detail-label">Batas pompa otomatis</span><strong>{{if .AutoThresholdAvailable}}Mati ≤ {{printf "%.0f" .AutoOffDistanceCM}} cm · Nyala ≥ {{printf "%.0f" .AutoOnDistanceCM}} cm{{else}}Tidak tersedia{{end}}</strong></div>
     <div><span class="detail-label">Status data</span><strong>{{if .FirebaseConnected}}Firebase Realtime Database{{else if .LinkedDeviceID}}Koneksi gagal{{else}}Fixture lokal{{end}}</strong></div>
   </div>
 </section>
