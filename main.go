@@ -66,6 +66,11 @@ type Activity struct {
 	WaterHeightAvailable bool    `json:"water_height_available,omitempty"`
 }
 
+type HistoryPageLink struct {
+	Number int
+	URL    string
+}
+
 type Plot struct {
 	Name     string
 	DeviceID string
@@ -145,13 +150,10 @@ type PageData struct {
 	ChartLabels            []string
 	Events                 []Activity
 	HistoryPage            int
-	OlderPage              int
-	NewerPage              int
+	HistoryPageLinks       []HistoryPageLink
 	HistoryPageSize        int
 	HistoryOlderCursor     string
-	HistoryNewerCursor     string
 	HasOlderHistory        bool
-	HasNewerHistory        bool
 }
 
 type App struct {
@@ -159,6 +161,8 @@ type App struct {
 	templates     map[string]*template.Template
 	mu            sync.Mutex
 	sessions      map[string]Session
+	googleOAuth   *googleOAuthConfig
+	googleStates  map[string]googleOAuthState
 	db            *sql.DB
 	state         IrrigationState
 	firebase      *firebaseRTDB
@@ -208,11 +212,17 @@ func newAppWithDBAndFirebase(db *sql.DB, firebase *firebaseRTDB) (*App, error) {
 	if err != nil {
 		return nil, fmt.Errorf("load static assets: %w", err)
 	}
+	googleOAuth, err := googleOAuthConfigFromEnv()
+	if err != nil {
+		return nil, err
+	}
 
 	app := &App{
 		mux:             http.NewServeMux(),
 		templates:       make(map[string]*template.Template),
 		sessions:        make(map[string]Session),
+		googleOAuth:     googleOAuth,
+		googleStates:    make(map[string]googleOAuthState),
 		db:              db,
 		firebase:        firebase,
 		defaultDeviceID: strings.TrimSpace(os.Getenv("ICARE_DEFAULT_DEVICE_ID")),
@@ -253,6 +263,8 @@ func newAppWithDBAndFirebase(db *sql.DB, firebase *firebaseRTDB) (*App, error) {
 	app.mux.HandleFunc("POST /login", app.login)
 	app.mux.HandleFunc("GET /register", app.registerPage)
 	app.mux.HandleFunc("POST /register", app.register)
+	app.mux.HandleFunc("POST /auth/google", app.startGoogleOAuth)
+	app.mux.HandleFunc("GET /auth/google/callback", app.googleOAuthCallback)
 	app.mux.HandleFunc("POST /logout", app.logout)
 	app.mux.HandleFunc("GET /history", app.history)
 	app.mux.HandleFunc("GET /devices", app.devices)
@@ -662,6 +674,7 @@ func (a *App) history(w http.ResponseWriter, r *http.Request) {
 	}
 	before := r.URL.Query().Get("before")
 	after := r.URL.Query().Get("after")
+	cursors := r.URL.Query()["cursor"]
 	if before != "" && after != "" {
 		http.Error(w, "Gunakan satu cursor riwayat saja.", http.StatusBadRequest)
 		return
@@ -669,6 +682,12 @@ func (a *App) history(w http.ResponseWriter, r *http.Request) {
 	if (before != "" && !validFirebaseKey(before)) || (after != "" && !validFirebaseKey(after)) {
 		http.Error(w, "Cursor riwayat tidak valid.", http.StatusBadRequest)
 		return
+	}
+	for _, cursor := range cursors {
+		if !validFirebaseKey(cursor) {
+			http.Error(w, "Cursor riwayat tidak valid.", http.StatusBadRequest)
+			return
+		}
 	}
 	page := 1
 	if rawPage := r.URL.Query().Get("page"); rawPage != "" {
@@ -684,11 +703,42 @@ func (a *App) history(w http.ResponseWriter, r *http.Request) {
 		direction, cursor = "before", before
 	} else if after != "" {
 		direction, cursor = "after", after
+	} else if page > 1 {
+		if len(cursors) < page-1 {
+			http.Error(w, "Cursor halaman riwayat tidak tersedia. Kembali ke halaman 1.", http.StatusBadRequest)
+			return
+		}
+		direction, cursor = "before", cursors[page-2]
 	}
 	data.HistoryPage = page
 	data.HistoryPageSize = firebaseHistoryPageSize
 	a.loadDeviceData(r.Context(), &data, direction, cursor)
+	if page == 2 && before != "" && len(cursors) == 0 {
+		cursors = append(cursors, before)
+	}
+	if data.HasOlderHistory && len(cursors) == page-1 && data.HistoryOlderCursor != "" {
+		cursors = append(cursors, data.HistoryOlderCursor)
+	}
+	data.HistoryPageLinks = buildHistoryPageLinks(data.Petak, cursors)
 	a.render(w, "history", data)
+}
+
+func buildHistoryPageLinks(petak string, cursors []string) []HistoryPageLink {
+	links := make([]HistoryPageLink, 0, len(cursors)+1)
+	for page := 1; page <= len(cursors)+1; page++ {
+		query := url.Values{
+			"page":  {strconv.Itoa(page)},
+			"petak": {petak},
+		}
+		for _, cursor := range cursors {
+			query.Add("cursor", cursor)
+		}
+		links = append(links, HistoryPageLink{
+			Number: page,
+			URL:    "/history?" + query.Encode(),
+		})
+	}
+	return links
 }
 
 func (a *App) devices(w http.ResponseWriter, r *http.Request) {
@@ -1161,6 +1211,9 @@ func (a *App) loadDeviceData(ctx context.Context, data *PageData, historyDirecti
 	if latest.DebitLPM != nil && finite(*latest.DebitLPM) && *latest.DebitLPM >= 0 {
 		data.DebitAvailable = true
 		data.DebitLPM = *latest.DebitLPM
+		data.FlowPercent = math.Min(100, data.DebitLPM/120*100)
+	} else {
+		data.FlowPercent = 0
 	}
 	if latest.TotalLiter != nil && finite(*latest.TotalLiter) && *latest.TotalLiter >= 0 {
 		data.TotalAvailable = true
@@ -1267,15 +1320,7 @@ func (a *App) loadDeviceData(ctx context.Context, data *PageData, historyDirecti
 	}
 	data.HistoryPageSize = firebaseHistoryPageSize
 	data.HistoryOlderCursor = history.OldestKey
-	data.HistoryNewerCursor = history.NewestKey
 	data.HasOlderHistory = history.HasOlder
-	data.HasNewerHistory = history.HasNewer
-	if history.HasOlder {
-		data.OlderPage = data.HistoryPage + 1
-	}
-	if history.HasNewer {
-		data.NewerPage = data.HistoryPage - 1
-	}
 }
 
 func activityFromDeviceEvent(key string, event deviceEvent) Activity {

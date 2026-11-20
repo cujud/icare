@@ -13,6 +13,7 @@ Buka `http://127.0.0.1:18081`, lalu buat akun dari halaman **Daftar gratis**. Se
 ## Cakupan prototipe
 
 - Halaman masuk dan pendaftaran dengan validasi formulir serta kata sandi yang di-hash.
+- Pendaftaran dan masuk dengan Google OAuth; email Google terverifikasi digunakan untuk membuat atau menghubungkan akun iCare lokal.
 - Dashboard dan halaman Perangkat membaca status terbaru dari Firebase Realtime Database untuk petak yang memiliki ID perangkat.
 - Halaman Riwayat mengambil maksimal 50 catatan per halaman di server menggunakan cursor Firebase; halaman berikut/sebelumnya tidak memuat seluruh riwayat.
 - Dashboard menampilkan grafik pembacaan tinggi air 24 jam dan lima aktivitas terakhir dari riwayat perangkat.
@@ -24,6 +25,10 @@ Buka `http://127.0.0.1:18081`, lalu buat akun dari halaman **Daftar gratis**. Se
 - Kontrol mode/pompa simulasi tersedia untuk petak tanpa perangkat tertaut. Perangkat Firebase menggunakan node `desired`; kontrol relay hanya aktif pada mode manual dan setelah status pompa tersedia.
 - Tombol dinonaktifkan selama perintah dikirim dan tetap menunggu konfirmasi terbaru dari `status_pompa` sebelum bisa digunakan kembali.
 - Tampilan responsif untuk desktop dan ponsel.
+
+### Google OAuth
+
+Atur `ICARE_GOOGLE_CLIENT_ID`, `ICARE_GOOGLE_CLIENT_SECRET`, dan `ICARE_GOOGLE_REDIRECT_URL` di environment server atau file `.env`. Daftarkan redirect URI yang sama di Google Cloud OAuth client; path callback aplikasi adalah `/auth/google/callback`. Google hanya digunakan untuk memverifikasi identitas. Akun dan sesi tetap dikelola aplikasi iCare; akun baru mendapat petak awal dan dapat melengkapi nomor HP di profil. Jangan commit client secret.
 
 ## Firebase Realtime Database
 

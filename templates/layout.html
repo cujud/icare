@@ -4,12 +4,12 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#28631f">
+  <meta name="theme-color" content="#5c8900">
   <title>{{.Title}} · iCare</title>
   <link rel="icon" type="image/png" href="/static/assets/icare-icon.png">
   <link rel="stylesheet" href="/static/style.css">
 </head>
-<body class="{{if .IsAuth}}auth-page{{end}}">
+<body class="{{if .IsAuth}}auth-page{{end}}" data-active="{{.Active}}">
 {{if .IsAuth}}
   <main class="auth-shell">
     <section class="auth-story" aria-label="Tentang iCare">
@@ -57,7 +57,7 @@
         </form>
       </div>
     </aside>
-    <main class="main-content" id="app-content" data-history-page="{{.HistoryPage}}" data-device-control-available="{{.DeviceControlAvailable}}" data-device-write-available="{{.DeviceWriteAvailable}}" data-desired-updated-at="{{.DesiredUpdatedAtMS}}" data-pump-mode="{{.Mode}}" data-pump-status-available="{{.PumpStatusAvailable}}" data-chart-start-ms="{{.ChartStartMS}}" data-last-update-ms="{{.LastUpdateMS}}" data-sensor-connected="{{.SensorSeen}}" data-sensor-valid="{{.SensorValid}}" data-sensor-fresh="{{.DataFresh}}" data-lora-online="{{.LoRaOnline}}" data-initial-node="{{.DeviceNode}}" data-initial-rssi="{{if .RSSIAvailable}}{{.RSSI}}{{end}}" data-device-ws="{{if and .FirebaseConnected .LinkedDeviceID (or (eq .Active "Beranda") (eq .Active "Riwayat"))}}/ws/device?petak={{urlquery .Petak}}{{end}}">
+    <main class="main-content" id="app-content" data-device-linked="{{if .LinkedDeviceID}}true{{else}}false{{end}}" data-history-page="{{.HistoryPage}}" data-device-control-available="{{.DeviceControlAvailable}}" data-device-write-available="{{.DeviceWriteAvailable}}" data-desired-updated-at="{{.DesiredUpdatedAtMS}}" data-pump-mode="{{.Mode}}" data-pump-status-available="{{.PumpStatusAvailable}}" data-chart-start-ms="{{.ChartStartMS}}" data-last-update-ms="{{.LastUpdateMS}}" data-sensor-connected="{{.SensorSeen}}" data-sensor-valid="{{.SensorValid}}" data-sensor-fresh="{{.DataFresh}}" data-lora-online="{{.LoRaOnline}}" data-initial-node="{{.DeviceNode}}" data-initial-rssi="{{if .RSSIAvailable}}{{.RSSI}}{{end}}" data-device-ws="{{if and .FirebaseConnected .LinkedDeviceID (or (eq .Active "Beranda") (eq .Active "Riwayat"))}}/ws/device?petak={{urlquery .Petak}}{{end}}">
       <header class="mobile-header">
         <a class="brand brand-mobile" href="/" aria-label="iCare"><img class="brand-logo" src="/static/assets/icare-logo.png" alt="iCare"></a>
         <span class="demo-label"><span class="status-dot" data-realtime-dot></span><span data-realtime-status>{{if .FirebaseConnected}}Firebase terhubung{{else if .LinkedDeviceID}}Firebase offline{{else}}Data demo{{end}}</span></span>

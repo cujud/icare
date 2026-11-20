@@ -1,7 +1,7 @@
 {{define "content"}}
 <p class="eyebrow">MULAI PANTAU SAWAH</p>
-<h1>Buat akun</h1>
-<p class="auth-subtitle">Isi data singkat untuk mulai memantau sawah Anda.</p>
+<h1>Selamat datang di iCare</h1>
+<p class="auth-subtitle">Pantau air sawah dan atur pompa dari satu aplikasi.</p>
 {{if .Error}}<div class="alert" role="alert">{{.Error}}</div>{{end}}
 <form method="post" action="/register" class="form-stack">
   <label for="name">Nama lengkap</label>
@@ -17,6 +17,12 @@
   <label class="checkbox-row"><input type="checkbox" name="terms" required> <span>Saya setuju dengan Syarat &amp; Ketentuan dan Kebijakan Privasi.</span></label>
   <button class="button button-primary button-wide" type="submit">Daftar sekarang</button>
 </form>
+<div class="auth-divider"><span>atau</span></div>
+<form method="post" action="/auth/google" class="google-auth-form">
+  <input type="hidden" name="intent" value="register">
+  <label class="checkbox-row"><input type="checkbox" name="terms" required> <span>Saya setuju dengan Syarat &amp; Ketentuan dan Kebijakan Privasi.</span></label>
+  <button class="button button-google button-wide" type="submit">Daftar dengan Google</button>
+</form>
 <p class="auth-footnote">Sudah punya akun? <a class="text-link" href="/login">Masuk</a></p>
-<p class="auth-note">Akun disimpan sementara di memori server dan akan hilang saat server dimulai ulang.</p>
+<p class="auth-note">Akun dikelola secara lokal oleh aplikasi iCare.</p>
 {{end}}

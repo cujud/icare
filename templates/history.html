@@ -1,12 +1,15 @@
 {{define "content"}}
-<div class="page-heading">
+<header class="page-heading page-hero">
   <div>
     <p class="eyebrow">CATATAN PEMANTAUAN</p>
-    <h1>Riwayat perangkat</h1>
-    <p class="muted">Catatan pemantauan Sawah · {{.Petak}}.</p>
+    <h1>Riwayat</h1>
+    <p class="hero-date">Catatan pemantauan Sawah · {{.Petak}}</p>
   </div>
-  <span class="status-pill"><span class="status-dot"></span> {{if .FirebaseConnected}}Riwayat Firebase{{else if .LinkedDeviceID}}Firebase tidak terhubung{{else}}Data demo{{end}}</span>
-</div>
+  <div class="hero-actions">
+    <span class="hero-connection"><span class="status-dot" data-realtime-dot></span><span data-realtime-status>{{if .FirebaseConnected}}Realtime aktif{{else if .LinkedDeviceID}}Firebase offline{{else}}Data demo{{end}}</span></span>
+    <a class="hero-profile" href="/profile" aria-label="Buka profil {{.UserName}}"><span>{{.Initials}}</span></a>
+  </div>
+</header>
 {{if .DeviceError}}<p class="alert" role="alert">{{.DeviceError}}</p>{{end}}
 <section class="card activity-card page-card">
   <div class="section-heading">
@@ -15,7 +18,7 @@
   </div>
   {{if .Events}}
   <div class="table-scroll">
-    <table>
+    <table class="history-table">
       <thead><tr><th>Waktu</th><th>Pembacaan</th><th>Mode operasi</th></tr></thead>
       <tbody id="history-rows">{{range .Events}}<tr {{if .Key}}data-event-key="{{.Key}}"{{end}}><td>{{.Time}}</td><td>{{.Description}}</td><td><span class="mode-tag">{{.Mode}}</span></td></tr>{{end}}</tbody>
     </table>
@@ -23,10 +26,15 @@
   {{else}}
     <p class="empty-state">{{if .FirebaseConnected}}Belum ada riwayat perangkat.{{else if .LinkedDeviceID}}Riwayat tidak tersedia selama perangkat belum terhubung.{{else}}Belum ada aktivitas pompa.{{end}}</p>
   {{end}}
-  {{if or .HasNewerHistory .HasOlderHistory}}
+  {{if gt (len .HistoryPageLinks) 1}}
   <nav class="history-pagination" aria-label="Navigasi halaman riwayat">
-    {{if .HasNewerHistory}}<a class="button button-outline" href="/history?petak={{urlquery .Petak}}&amp;after={{urlquery .HistoryNewerCursor}}&amp;page={{.NewerPage}}">Lebih baru</a>{{else}}<span></span>{{end}}
-    {{if .HasOlderHistory}}<a class="button button-outline" href="/history?petak={{urlquery .Petak}}&amp;before={{urlquery .HistoryOlderCursor}}&amp;page={{.OlderPage}}">Lebih lama</a>{{end}}
+    {{range .HistoryPageLinks}}
+      {{if eq .Number $.HistoryPage}}
+      <span class="history-page-current" aria-current="page" aria-label="Halaman {{.Number}}">{{.Number}}</span>
+      {{else}}
+      <a class="history-page-link" href="{{.URL}}" aria-label="Halaman {{.Number}}">{{.Number}}</a>
+      {{end}}
+    {{end}}
   </nav>
   {{end}}
 </section>

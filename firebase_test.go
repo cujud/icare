@@ -162,7 +162,7 @@ func TestDashboardUsesFirebaseDeviceSnapshot(t *testing.T) {
 	response := httptest.NewRecorder()
 	app.ServeHTTP(response, request)
 	body := response.Body.String()
-	for _, expected := range []string{"Terhubung ke Firebase", "Jarak sensor ke air", `id="distance-value">23.2</span> <span>cm</span>`, "Tinggi air sawah 76.8 cm", "OK", "Belum dikalibrasi", "MISSING_CONFIG", `name="device_id" value=""`, "Firebase Realtime Database", `id="water-chart-line"`, `id="sensor-readiness"`, `id="flow-rate-value"`, `id="device-stale-alert"`, "data-chart-start-ms=", "y1=\"108.0\"", "y1=\"136.0\"", "BERKALA_1_MENIT"} {
+	for _, expected := range []string{"Realtime aktif", "Ketinggian air", `id="water-height-value">76.8</span> <span>cm</span>`, `id="distance-value">23.2</span> cm`, "OK", "Belum dikalibrasi", "MISSING_CONFIG", `name="device_id" value=""`, `id="water-chart-line"`, `id="sensor-readiness"`, `id="flow-rate-value"`, `id="device-stale-alert"`, `id="recommendation-text"`, "data-chart-start-ms=", "y1=\"108.0\"", "y1=\"136.0\"", "BERKALA_1_MENIT"} {
 		if !strings.Contains(body, expected) {
 			t.Errorf("dashboard missing %q", expected)
 		}
@@ -198,20 +198,20 @@ func TestHistoryUsesFirebaseExportRecords(t *testing.T) {
 	request.AddCookie(&http.Cookie{Name: sessionCookieName, Value: token})
 	response := httptest.NewRecorder()
 	app.ServeHTTP(response, request)
-	for _, expected := range []string{"Riwayat Firebase", "MISSING_CONFIG", "Tinggi air 76.8 cm", "BERKALA_1_MENIT"} {
+	for _, expected := range []string{"Realtime aktif", "MISSING_CONFIG", "Tinggi air 76.8 cm", "BERKALA_1_MENIT"} {
 		if !strings.Contains(response.Body.String(), expected) {
 			t.Errorf("Firebase history page missing %q", expected)
 		}
 	}
-	if strings.Contains(response.Body.String(), "Lebih lama") {
-		t.Error("history page showed a next page when fewer than 50 records exist")
+	if strings.Contains(response.Body.String(), `class="history-pagination"`) {
+		t.Error("history page showed pagination when fewer than 50 records exist")
 	}
 }
 
-func TestHistoryPageRendersAtMostFiftyRowsAndCursorLinks(t *testing.T) {
-	history := make(map[string]deviceEvent, 55)
+func TestHistoryPageRendersNumberedCursorPagination(t *testing.T) {
+	history := make(map[string]deviceEvent, 120)
 	now := time.Now()
-	for index := 0; index < 55; index++ {
+	for index := 0; index < 120; index++ {
 		height := float64(index)
 		history[fmt.Sprintf("key-%03d", index)] = deviceEvent{
 			TimestampMS:   now.Add(time.Duration(index) * time.Minute).UnixMilli(),
@@ -267,19 +267,30 @@ func TestHistoryPageRendersAtMostFiftyRowsAndCursorLinks(t *testing.T) {
 	if got := strings.Count(response.Body.String(), "data-event-key="); got != 50 {
 		t.Fatalf("first page row count = %d, want 50", got)
 	}
-	if !strings.Contains(response.Body.String(), "before=key-005") {
-		t.Fatal("first page did not render the older-page cursor")
+	if !strings.Contains(response.Body.String(), `href="/history?cursor=key-070&amp;page=2`) {
+		t.Fatal("first page did not render page 2 with its Firebase cursor")
 	}
 
-	request = httptest.NewRequest(http.MethodGet, "/history?petak=Petak+A&before=key-005&page=2", nil)
+	request = httptest.NewRequest(http.MethodGet, "/history?petak=Petak+A&page=2&cursor=key-070", nil)
 	request.AddCookie(&http.Cookie{Name: sessionCookieName, Value: token})
 	response = httptest.NewRecorder()
 	app.ServeHTTP(response, request)
-	if got := strings.Count(response.Body.String(), "data-event-key="); got != 5 {
-		t.Fatalf("second page row count = %d, want 5", got)
+	if got := strings.Count(response.Body.String(), "data-event-key="); got != 50 {
+		t.Fatalf("second page row count = %d, want 50", got)
 	}
-	if !strings.Contains(response.Body.String(), "after=key-004") || !strings.Contains(response.Body.String(), "page=1") {
-		t.Fatal("second page did not render the previous-page cursor")
+	if !strings.Contains(response.Body.String(), `href="/history?cursor=key-070&amp;cursor=key-020&amp;page=3`) {
+		t.Fatal("second page did not render page 3 with both Firebase cursors")
+	}
+
+	request = httptest.NewRequest(http.MethodGet, "/history?petak=Petak+A&page=3&cursor=key-070&cursor=key-020", nil)
+	request.AddCookie(&http.Cookie{Name: sessionCookieName, Value: token})
+	response = httptest.NewRecorder()
+	app.ServeHTTP(response, request)
+	if got := strings.Count(response.Body.String(), "data-event-key="); got != 20 {
+		t.Fatalf("third page row count = %d, want 20", got)
+	}
+	if strings.Contains(response.Body.String(), `aria-label="Halaman 4"`) {
+		t.Fatal("last page rendered a nonexistent next page")
 	}
 }
 
@@ -463,7 +474,7 @@ func TestDashboardDoesNotShowDemoValuesForUnreachableDevice(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("dashboard response = %d, want %d", response.Code, http.StatusOK)
 	}
-	for _, expected := range []string{"Data perangkat tidak dapat dimuat dari Firebase", `id="distance-value">—</span> <span>cm</span>`, "Firebase tidak terhubung"} {
+	for _, expected := range []string{"Data perangkat tidak dapat dimuat dari Firebase", `id="water-height-value">—</span> <span>cm</span>`, `id="distance-value">—</span> cm`, "Firebase offline"} {
 		if !strings.Contains(body, expected) {
 			t.Errorf("offline dashboard missing %q", expected)
 		}

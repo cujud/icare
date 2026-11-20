@@ -1,12 +1,15 @@
 {{define "content"}}
-<div class="page-heading">
+<header class="page-heading page-hero">
   <div>
     <p class="eyebrow">DASHBOARD · {{if .FirebaseConnected}}FIREBASE{{else if .LinkedDeviceID}}PERANGKAT{{else}}DATA DEMO{{end}}</p>
     <h1>Halo, {{.UserName}}</h1>
-    <p class="muted">{{.Today}} <span class="separator">·</span> Sawah · {{.Petak}}</p>
+    <p class="hero-date">{{.Today}} <span class="separator">·</span> Sawah · {{.Petak}}</p>
   </div>
-  <span class="status-pill"><span class="status-dot" data-realtime-dot></span><span data-realtime-status>{{if .FirebaseConnected}}Terhubung ke Firebase{{else if .LinkedDeviceID}}Firebase tidak terhubung{{else}}Data sensor contoh{{end}}</span></span>
-</div>
+  <div class="hero-actions">
+    <span class="hero-connection"><span class="status-dot" data-realtime-dot></span><span data-realtime-status>{{if .FirebaseConnected}}Realtime aktif{{else if .LinkedDeviceID}}Firebase offline{{else}}Simulasi lokal{{end}}</span></span>
+    <a class="hero-profile" href="/profile" aria-label="Buka profil {{.UserName}}"><span>{{.Initials}}</span></a>
+  </div>
+</header>
 
 <nav class="plot-tabs" aria-label="Pilih petak">
   {{range .Petaks}}
@@ -19,13 +22,14 @@
 <p class="alert" id="device-stale-alert" role="alert" {{if or (not .LinkedDeviceID) (not .DeviceStale)}}hidden{{end}}>Gateway belum mengirim data baru sejak <span class="last-update-ago">{{.LastUpdateAgo}}</span> (<span class="last-update-time">{{.LastUpdate}}</span>). Periksa daya dan koneksi internet ESP32.</p>
 <p class="plot-note">
   {{if .Petak}}
-    {{range .Petaks}}{{if eq $.Petak .Name}}{{if .DeviceID}}ID perangkat tersimpan: {{.DeviceID}}{{else}}Petak ini belum ditautkan ke perangkat Firebase.{{end}}{{end}}{{end}}
+    {{range .Petaks}}{{if eq $.Petak .Name}}{{if .DeviceID}}Perangkat <code>{{.DeviceID}}</code> ditautkan ke petak ini.{{else}}Petak ini belum ditautkan ke perangkat Firebase.{{end}}{{end}}{{end}}
   {{else}}
     Belum ada petak. Tambahkan petak untuk memulai.
   {{end}}
-  {{if .FirebaseConnected}}Status perangkat berasal dari Firebase Realtime Database. Update terakhir: <span class="last-update-ago">{{.LastUpdateAgo}}</span> (<span class="last-update-time">{{.LastUpdate}}</span>). <span id="device-fault-note">{{if .DeviceFault}}Status sensor: {{.DeviceFault}}.{{end}}</span> <span id="pump-status-reason">{{if .ConfigReason}}Status pompa: {{.ConfigReason}}.{{end}}</span>{{else if .LinkedDeviceID}}Data perangkat tidak ditampilkan sampai koneksi Firebase berhasil.{{else}}Nilai sensor di bawah adalah data simulasi lokal.{{end}}
+  {{if .FirebaseConnected}}Update terakhir <span class="last-update-ago">{{.LastUpdateAgo}}</span> (<span class="last-update-time">{{.LastUpdate}}</span>). <span id="device-fault-note">{{if .DeviceFault}}Sensor: {{.DeviceFault}}.{{end}}</span> <span id="pump-status-reason">{{if .ConfigReason}}Pompa: {{.ConfigReason}}.{{end}}</span>{{else if .LinkedDeviceID}}Data perangkat tidak tersedia selama koneksi Firebase terputus.{{else}}Nilai sensor di bawah adalah data simulasi lokal.{{end}}
 </p>
-<section class="card plot-management">
+<details class="card plot-management">
+  <summary>Kelola petak dan perangkat</summary>
   <form method="post" action="/plots" class="plot-form">
     <label>
       Nama petak
@@ -37,54 +41,61 @@
     </label>
     <button class="button button-primary" type="submit">Tambah petak</button>
   </form>
-</section>
+</details>
 
-<section class="metric-grid" aria-label="Ringkasan kondisi sawah">
+<section class="metric-grid dashboard-metrics" aria-label="Ringkasan kondisi sawah">
   <article class="card metric-card">
-    <p class="metric-label">{{if .LinkedDeviceID}}Jarak sensor ke air{{else}}Ketinggian air{{end}}</p>
-    <p class="metric-value"><span id="distance-value">{{if .LinkedDeviceID}}{{if .SensorAvailable}}{{printf "%.1f" .DistanceCM}}{{else}}—{{end}}{{else}}{{printf "%.0f" .WaterLevel}}{{end}}</span> <span>cm</span></p>
-    {{if .LinkedDeviceID}}
-      <p class="metric-status" id="sensor-status"><span id="sensor-readiness">{{if .SensorAvailable}}Sensor siap{{else if .SensorStatus}}{{.SensorStatus}}{{else}}Data belum tersedia{{end}}</span><span id="water-height-value" {{if not .WaterHeightAvailable}}hidden{{end}}>{{if .WaterHeightAvailable}} · Tinggi air sawah {{printf "%.1f" .WaterHeightCM}} cm{{end}}</span></p>
-    {{else}}
-    <div class="meter" role="meter" aria-label="Ketinggian air" aria-valuenow="{{printf "%.0f" .WaterLevel}}" aria-valuemin="0" aria-valuemax="100">
-      <span style="width: {{printf "%.0f" .WaterLevel}}%"></span>
+    <p class="metric-label">Ketinggian air</p>
+    <p class="metric-value"><span id="water-height-value">{{if .LinkedDeviceID}}{{if .WaterHeightAvailable}}{{printf "%.1f" .WaterHeightCM}}{{else}}—{{end}}{{else}}{{printf "%.0f" .WaterLevel}}{{end}}</span> <span>cm</span></p>
+    <div class="meter" role="meter" id="water-level-meter" aria-label="Ketinggian air" aria-valuenow="{{if .LinkedDeviceID}}{{if .WaterHeightAvailable}}{{printf "%.1f" .WaterHeightCM}}{{else}}0{{end}}{{else}}{{printf "%.0f" .WaterLevel}}{{end}}" aria-valuemin="0" aria-valuemax="100">
+      <span id="water-level-meter-bar" style="width: {{if .LinkedDeviceID}}{{if .WaterHeightAvailable}}{{printf "%.0f" .WaterHeightCM}}{{else}}0{{end}}{{else}}{{printf "%.0f" .WaterLevel}}{{end}}%"></span>
     </div>
+    {{if .LinkedDeviceID}}
+      <p class="metric-status" id="sensor-status"><span id="sensor-readiness">{{if .SensorAvailable}}Sensor siap{{else if .SensorStatus}}{{.SensorStatus}}{{else}}Data belum tersedia{{end}}</span><span class="metric-detail"> · Jarak sensor <span id="distance-value">{{if .SensorAvailable}}{{printf "%.1f" .DistanceCM}}{{else}}—{{end}}</span> cm</span></p>
+    {{else}}
     <p class="metric-status">Normal</p>
     {{end}}
   </article>
   <article class="card metric-card">
     <p class="metric-label">Debit air</p>
     <p class="metric-value"><span id="flow-rate-value">{{if .LinkedDeviceID}}{{if .DebitAvailable}}{{printf "%.1f" .DebitLPM}}{{else}}—{{end}}{{else}}{{printf "%.0f" .FlowRate}}{{end}}</span> <span>L/mnt</span></p>
+    <div class="meter" role="meter" id="flow-meter" aria-label="Debit air" aria-valuenow="{{if .LinkedDeviceID}}{{if .DebitAvailable}}{{printf "%.1f" .DebitLPM}}{{else}}0{{end}}{{else}}{{printf "%.0f" .FlowRate}}{{end}}" aria-valuemin="0" aria-valuemax="120">
+      <span id="flow-meter-bar" style="width: {{printf "%.0f" .FlowPercent}}%"></span>
+    </div>
     {{if .LinkedDeviceID}}
       <p class="metric-status" id="flow-status"><span id="flow-calibration-status">{{if not .FlowCalibrated}}Belum dikalibrasi{{else if not .DebitAvailable}}Nilai debit belum dikirim{{else}}Terkalibrasi{{end}}</span><span id="total-liters-value" {{if not .TotalAvailable}}hidden{{end}}>{{if .TotalAvailable}} · Total {{printf "%.1f" .TotalLiter}} L{{end}}</span></p>
     {{else}}
-    <div class="meter" role="meter" aria-label="Debit air" aria-valuenow="{{printf "%.0f" .FlowRate}}" aria-valuemin="0" aria-valuemax="120">
-      <span style="width: {{printf "%.0f" .FlowPercent}}%"></span>
-    </div>
     <p class="metric-status">Normal</p>
     {{end}}
   </article>
-  <article class="card metric-card pump-summary">
-    <p class="metric-label">Pompa air</p>
-    {{if .LinkedDeviceID}}
-      {{if .FirebaseConnected}}
-        {{if .PumpStatusAvailable}}<p class="metric-value {{if .PumpOn}}pump-on{{else}}pump-off{{end}}" id="pump-state-value">{{if .PumpOn}}AKTIF{{else}}MATI{{end}}</p>{{else}}<p class="metric-value" id="pump-state-value">—</p>{{end}}
-      {{else}}<p class="metric-value" id="pump-state-value">—</p>{{end}}
-      <p class="muted" id="pump-mode-value">Mode {{.ModeLabel}}</p>
-    {{else}}
-    <p class="metric-value {{if .PumpOn}}pump-on{{else}}pump-off{{end}}">{{if .PumpOn}}AKTIF{{else}}MATI{{end}}</p>
-    <p class="muted" id="pump-mode-value">Mode {{.ModeLabel}}</p>
-    {{end}}
-  </article>
-  <article class="card metric-card">
-    <p class="metric-label">{{if .LinkedDeviceID}}Status node{{else}}Tekanan air{{end}}</p>
-    {{if .LinkedDeviceID}}
-      <p class="metric-value" id="device-node-value">{{if .DeviceNode}}{{.DeviceNode}}{{else}}—{{end}}</p>
-      <p class="metric-status" id="device-link-status">{{if .LoRaOnline}}LoRa online{{else}}LoRa offline{{end}}{{if .RSSIAvailable}} · RSSI {{.RSSI}} dBm{{end}}</p>
-    {{else}}
-      <p class="metric-value">{{.PressureLabel}} <span>bar</span></p>
-      <p class="metric-status">Normal</p>
-    {{end}}
+  <article class="card pump-summary">
+    <div class="pump-summary-state">
+      <p class="metric-label">Pompa air</p>
+      {{if .LinkedDeviceID}}
+        {{if .FirebaseConnected}}
+          {{if .PumpStatusAvailable}}<p class="metric-value {{if .PumpOn}}pump-on{{else}}pump-off{{end}}" id="pump-state-value">{{if .PumpOn}}AKTIF{{else}}MATI{{end}}</p>{{else}}<p class="metric-value" id="pump-state-value">—</p>{{end}}
+        {{else}}<p class="metric-value" id="pump-state-value">—</p>{{end}}
+        <p class="pump-device-status"><span id="pump-mode-value">Mode {{.ModeLabel}}</span><span class="device-status-inline"><span id="device-node-value">{{if .DeviceNode}}{{.DeviceNode}}{{else}}Node —{{end}}</span><span id="device-link-status">{{if .LoRaOnline}}LoRa online{{else}}LoRa offline{{end}}{{if .RSSIAvailable}} · RSSI {{.RSSI}} dBm{{end}}</span></span></p>
+      {{else}}
+        <p class="metric-value {{if .PumpOn}}pump-on{{else}}pump-off{{end}}">{{if .PumpOn}}AKTIF{{else}}MATI{{end}}</p>
+        <p class="pump-device-status"><span id="pump-mode-value">Mode {{.ModeLabel}}</span><span class="device-status-inline">Tekanan air {{.PressureLabel}} bar</span></p>
+      {{end}}
+    </div>
+    <div class="pump-summary-controls">
+      <form method="post" action="/pump/mode" class="mode-switch" aria-label="Pilih mode pompa" {{if .LinkedDeviceID}}data-device-control="true"{{end}}>
+        <input type="hidden" name="petak" value="{{.Petak}}">
+        <button type="submit" name="mode" value="auto" class="{{if eq .Mode "auto"}}selected{{end}}" aria-pressed="{{if eq .Mode "auto"}}true{{else}}false{{end}}" {{if and .LinkedDeviceID (not .DeviceControlAvailable)}}disabled{{end}}>Otomatis</button>
+        <button type="submit" name="mode" value="manual" class="{{if eq .Mode "manual"}}selected{{end}}" aria-pressed="{{if eq .Mode "manual"}}true{{else}}false{{end}}" {{if and .LinkedDeviceID (not .DeviceControlAvailable)}}disabled{{end}}>Manual</button>
+      </form>
+      <form method="post" action="/pump/toggle" class="pump-action-form" {{if .LinkedDeviceID}}data-device-control="true"{{end}}>
+        <input type="hidden" name="petak" value="{{.Petak}}">
+        <button id="pump-toggle-button" class="button {{if .PumpOn}}button-danger{{else}}button-primary{{end}} button-wide" type="submit" {{if and .LinkedDeviceID (or (not .DeviceControlAvailable) (ne .Mode "manual") (not .PumpStatusAvailable))}}disabled{{end}}>{{if .PumpOn}}Matikan pompa{{else}}Nyalakan pompa{{end}}</button>
+      </form>
+    </div>
+    <div class="pump-summary-footer">
+      <p class="control-description" id="control-status" aria-live="polite">{{if .LinkedDeviceID}}{{if not .DeviceControlAvailable}}{{if not .DeviceWriteAvailable}}Kontrol menunggu kredensial Firebase dengan izin tulis.{{else if not .DesiredStateAvailable}}Field desired.autoMode/desired.relayOn belum tersedia.{{else if .DeviceControlPending}}Perintah sebelumnya menunggu konfirmasi Firebase.{{else}}Menunggu status pompa terbaru dari Firebase.{{end}}{{else if eq .Mode "manual"}}Mode manual: status relay mengikuti perintah dari aplikasi.{{else if eq .Mode "auto"}}Mode otomatis{{if .AutoThresholdAvailable}}: pompa mati saat jarak ≤ {{printf "%.0f" .AutoOffDistanceCM}} cm dan menyala saat jarak ≥ {{printf "%.0f" .AutoOnDistanceCM}} cm{{else}}: pompa mengikuti batas otomatis perangkat{{end}}.{{else}}Menunggu status mode pompa dari Firebase.{{end}}{{else if eq .Mode "auto"}}Mode otomatis mengatur pompa berdasarkan kondisi air.{{else}}Mode manual: nyalakan atau matikan pompa sendiri.{{end}}</p>
+      <p class="demo-hint">{{if .LinkedDeviceID}}Kontrol aktif kembali setelah Firebase mengonfirmasi mode dan relay terbaru.{{else}}Perintah hanya mengubah simulasi lokal, belum terhubung ke perangkat fisik.{{end}}</p>
+    </div>
   </article>
 </section>
 
@@ -115,29 +126,8 @@
     <p class="empty-state" id="chart-empty-state" {{if .ChartPoints}}hidden{{end}}>{{if .LinkedDeviceID}}{{if .FirebaseConnected}}Belum ada pembacaan ketinggian air dalam 24 jam terakhir.{{else}}Grafik tidak tersedia karena perangkat belum terhubung.{{end}}{{else}}Grafik belum tersedia.{{end}}</p>
   </article>
 
-  <article class="card control-card">
-    <div class="section-heading"><h2>Kontrol pompa</h2></div>
-    <form method="post" action="/pump/mode" class="mode-switch" aria-label="Pilih mode pompa" {{if .LinkedDeviceID}}data-device-control="true"{{end}}>
-      <input type="hidden" name="petak" value="{{.Petak}}">
-      <button type="submit" name="mode" value="auto" class="{{if eq .Mode "auto"}}selected{{end}}" aria-pressed="{{if eq .Mode "auto"}}true{{else}}false{{end}}" {{if and .LinkedDeviceID (not .DeviceControlAvailable)}}disabled{{end}}>Otomatis</button>
-      <button type="submit" name="mode" value="manual" class="{{if eq .Mode "manual"}}selected{{end}}" aria-pressed="{{if eq .Mode "manual"}}true{{else}}false{{end}}" {{if and .LinkedDeviceID (not .DeviceControlAvailable)}}disabled{{end}}>Manual</button>
-    </form>
-    {{if .LinkedDeviceID}}
-      <p class="control-description" id="control-status" aria-live="polite">{{if not .DeviceControlAvailable}}{{if not .DeviceWriteAvailable}}Kontrol tidak tersedia: kredensial Firebase tidak memiliki izin tulis.{{else if not .DesiredStateAvailable}}Kontrol tidak tersedia: field desired.autoMode/desired.relayOn belum tersedia.{{else if .DeviceControlPending}}Perintah sebelumnya masih menunggu konfirmasi terbaru dari Firebase.{{else}}Status kontrol pompa belum tersedia atau belum terkonfirmasi.{{end}}{{else if eq .Mode "manual"}}Mode manual: status relay mengikuti perintah dari aplikasi.{{else if eq .Mode "auto"}}Mode otomatis{{if .AutoThresholdAvailable}}: pompa mati saat jarak ≤ {{printf "%.0f" .AutoOffDistanceCM}} cm dan menyala saat jarak ≥ {{printf "%.0f" .AutoOnDistanceCM}} cm{{else}}: pompa mengikuti batas otomatis perangkat{{end}}.{{else}}Menunggu status mode pompa dari Firebase.{{end}}</p>
-    {{else if eq .Mode "auto"}}
-      <p class="control-description" id="control-status" aria-live="polite">Mode otomatis mengatur pompa berdasarkan kondisi air.</p>
-    {{else}}
-      <p class="control-description" id="control-status" aria-live="polite">Mode manual: nyalakan atau matikan pompa sendiri. Pompa tidak akan menyala otomatis.</p>
-    {{end}}
-    <form method="post" action="/pump/toggle" class="pump-action-form" {{if .LinkedDeviceID}}data-device-control="true"{{end}}>
-      <input type="hidden" name="petak" value="{{.Petak}}">
-      <button id="pump-toggle-button" class="button {{if .PumpOn}}button-danger{{else}}button-primary{{end}} button-wide" type="submit" {{if and .LinkedDeviceID (or (not .DeviceControlAvailable) (ne .Mode "manual") (not .PumpStatusAvailable))}}disabled{{end}}>{{if .PumpOn}}Matikan pompa{{else}}Nyalakan pompa{{end}}</button>
-    </form>
-    {{if .LinkedDeviceID}}
-    <p class="demo-hint">Perintah dikirim ke <code>devices/{{.LinkedDeviceID}}/desired</code>. Tombol aktif kembali setelah <code>status_pompa</code> mengonfirmasi mode dan status pompa terbaru.</p>
-    {{else}}
-    <p class="demo-hint">Perintah hanya mengubah simulasi lokal, belum terhubung ke perangkat fisik.</p>
-    {{end}}
+  <article class="card recommendation-card">
+    <p class="recommendation-copy"><strong>Rekomendasi:</strong> <span id="recommendation-text">{{if .LinkedDeviceID}}{{if .WaterHeightAvailable}}Tinggi air {{printf "%.1f" .WaterHeightCM}} cm. {{end}}{{if .AutoThresholdAvailable}}Mode otomatis mengikuti ambang perangkat: pompa mati pada jarak ≤ {{printf "%.0f" .AutoOffDistanceCM}} cm dan menyala pada jarak ≥ {{printf "%.0f" .AutoOnDistanceCM}} cm.{{else}}Pantau status perangkat dan sesuaikan mode pompa sesuai kondisi sawah.{{end}}{{else}}Level air sudah ideal; pompa otomatis akan mati saat mencapai 80 cm.{{end}}</span></p>
   </article>
 </section>
 

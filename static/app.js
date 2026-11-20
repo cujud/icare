@@ -6,8 +6,6 @@ document.addEventListener("submit", (event) => {
     return;
   }
   if (form.dataset.deviceControl === "true") {
-    event.preventDefault();
-    void submitDeviceControl(form, event.submitter);
     return;
   }
   if (form.dataset.submitting === "true") {
@@ -114,6 +112,7 @@ if (realtimePath) {
       return;
     }
     form.dataset.submitting = "true";
+    form.setAttribute("aria-busy", "true");
     const formData = new FormData(form);
     if (submitter instanceof HTMLButtonElement && submitter.name) {
       formData.set(submitter.name, submitter.value);
@@ -137,10 +136,21 @@ if (realtimePath) {
       updatePumpControls();
     } catch (error) {
       form.dataset.submitting = "false";
+      form.removeAttribute("aria-busy");
       setControlStatus(error instanceof Error ? error.message : "Perintah pompa gagal dikirim.");
       setControlsDisabled(false);
     }
   }
+
+  document.addEventListener("submit", (event) => {
+    const form = event.target;
+    if (!(form instanceof HTMLFormElement) || form.dataset.deviceControl !== "true" ||
+        !form.matches(".pump-action-form, .mode-switch")) {
+      return;
+    }
+    event.preventDefault();
+    void submitDeviceControl(form, event.submitter);
+  });
 
   function setText(id, value) {
     const element = document.getElementById(id);
@@ -153,6 +163,18 @@ if (realtimePath) {
     const element = document.getElementById(id);
     if (element) {
       element.hidden = hidden;
+    }
+  }
+
+  function setMeter(id, barId, value, max) {
+    const meter = document.getElementById(id);
+    const bar = document.getElementById(barId);
+    const current = Number.isFinite(value) && value >= 0 ? value : 0;
+    if (meter) {
+      meter.setAttribute("aria-valuenow", current.toFixed(1));
+    }
+    if (bar) {
+      bar.style.width = `${Math.max(0, Math.min(100, current / max * 100))}%`;
     }
   }
 
@@ -260,6 +282,24 @@ if (realtimePath) {
     }
   }
 
+  function renderRecommendation() {
+    const recommendation = document.getElementById("recommendation-text");
+    if (!recommendation) {
+      return;
+    }
+    const waterHeight = latestState.tinggi_air_sawah_cm;
+    const heightText = Number.isFinite(waterHeight) && waterHeight >= 0
+      ? `Tinggi air ${waterHeight.toFixed(1)} cm. `
+      : "";
+    if (observedPumpMode === "manual") {
+      recommendation.textContent = `${heightText}Mode manual. Gunakan tombol untuk menyalakan atau mematikan pompa.`;
+    } else if (Number.isFinite(autoOffDistance) && Number.isFinite(autoOnDistance)) {
+      recommendation.textContent = `${heightText}Mode otomatis mengikuti ambang perangkat: pompa mati pada jarak ≤ ${autoOffDistance.toFixed(0)} cm dan menyala pada jarak ≥ ${autoOnDistance.toFixed(0)} cm.`;
+    } else if (appContent.dataset.deviceLinked === "true") {
+      recommendation.textContent = `${heightText}Pantau status perangkat dan sesuaikan mode pompa sesuai kondisi sawah.`;
+    }
+  }
+
   function renderLatest(changedFields = new Set()) {
     const connected = latestState.sensor_terhubung === true;
     const valid = connected && latestState.sensor_air_valid === true && latestState.data_air_terbaru === true;
@@ -283,8 +323,8 @@ if (realtimePath) {
           latestState.tinggi_air_sawah_cm = null;
         }
         setText("distance-value", "—");
-        setText("water-height-value", "");
-        setHidden("water-height-value", true);
+        setText("water-height-value", "—");
+        setMeter("water-level-meter", "water-level-meter-bar", 0, 100);
       } else {
         if (Number.isFinite(distance) && distance >= 0) {
           setText("distance-value", distance.toFixed(1));
@@ -292,11 +332,11 @@ if (realtimePath) {
           setText("distance-value", "—");
         }
         if (Number.isFinite(waterHeight) && waterHeight >= 0) {
-          setText("water-height-value", ` · Tinggi air sawah ${waterHeight.toFixed(1)} cm`);
-          setHidden("water-height-value", false);
-        } else if (changedFields.has("tinggi_air_sawah_cm")) {
-          setText("water-height-value", "");
-          setHidden("water-height-value", true);
+          setText("water-height-value", waterHeight.toFixed(1));
+          setMeter("water-level-meter", "water-level-meter-bar", waterHeight, 100);
+        } else {
+          setText("water-height-value", "—");
+          setMeter("water-level-meter", "water-level-meter-bar", 0, 100);
         }
       }
       const sensorStatus = String(latestState.status_sensor_air || "").trim();
@@ -314,6 +354,7 @@ if (realtimePath) {
     }
     if (changedFields.has("debit_air_lpm")) {
       setText("flow-rate-value", Number.isFinite(debit) && debit >= 0 ? debit.toFixed(1) : "—");
+      setMeter("flow-meter", "flow-meter-bar", debit, 120);
     }
     if (changedFields.has("flow_sudah_kalibrasi") && typeof latestState.flow_sudah_kalibrasi === "boolean") {
       setText("flow-calibration-status", latestState.flow_sudah_kalibrasi ? "Terkalibrasi" : "Belum dikalibrasi");
@@ -353,6 +394,7 @@ if (realtimePath) {
       setText("device-link-status", `${online ? "LoRa online" : "LoRa offline"}${signal}`);
     }
     updateAutoThresholds();
+    renderRecommendation();
   }
 
   function applyRealtimeFields(message) {
@@ -420,9 +462,14 @@ if (realtimePath) {
         pendingControl = null;
         document.querySelectorAll("[data-device-control='true']").forEach((form) => {
           form.dataset.submitting = "false";
+          form.removeAttribute("aria-busy");
         });
         setControlStatus("Perangkat telah mengonfirmasi perintah.");
       }
+    } else if (!pendingControl && fields.mode_operasi) {
+      setControlStatus(observedPumpMode === "manual"
+        ? "Mode manual: status relay mengikuti perintah dari aplikasi."
+        : "Mode otomatis: pompa mengikuti batas otomatis perangkat.");
     }
     updatePumpControls();
   }
@@ -458,6 +505,7 @@ if (realtimePath) {
         headerRow.append(th);
       }
       thead.append(headerRow);
+      table.className = tbodyId === "history-rows" ? "history-table" : "activity-table";
       tbody = document.createElement("tbody");
       tbody.id = tbodyId;
       table.append(thead, tbody);
