@@ -43,12 +43,24 @@ const (
 	passwordRounds    = 120_000
 )
 
+var errFirebasePlotExists = errors.New("Firebase plot already exists")
+
 type User struct {
 	Name         string
 	Email        string
 	Phone        string
 	PasswordSalt []byte
 	PasswordHash []byte
+	Role         string
+	FirebaseUID  string
+}
+
+type AdminUser struct {
+	UID   string
+	Email string
+	Name  string
+	Phone string
+	Role  string
 }
 
 type Session struct {
@@ -72,8 +84,10 @@ type HistoryPageLink struct {
 }
 
 type Plot struct {
-	Name     string
-	DeviceID string
+	Name      string
+	DeviceID  string
+	OwnerUID  string
+	OwnerName string
 }
 
 type IrrigationState struct {
@@ -89,6 +103,8 @@ type PageData struct {
 	Title                  string
 	Active                 string
 	Petak                  string
+	PetakOwnerUID          string
+	PetakOwnerName         string
 	Petaks                 []Plot
 	DeviceID               string
 	LinkedDeviceID         string
@@ -154,6 +170,8 @@ type PageData struct {
 	HistoryPageSize        int
 	HistoryOlderCursor     string
 	HasOlderHistory        bool
+	IsSuperAdmin           bool
+	AdminUsers             []AdminUser
 }
 
 type App struct {
@@ -166,10 +184,12 @@ type App struct {
 	db            *sql.DB
 	state         IrrigationState
 	firebase      *firebaseRTDB
+	userFirebase  *firebaseRTDB
 	pumpCommandMu sync.Mutex
 	// defaultDeviceID dipakai untuk petak yang belum punya ID perangkat sendiri
 	// (ICARE_DEFAULT_DEVICE_ID), sehingga dashboard tidak jatuh ke data demo.
 	defaultDeviceID string
+	superAdminEmail string
 }
 
 func newApp() (*App, error) {
@@ -212,20 +232,24 @@ func newAppWithDBAndFirebase(db *sql.DB, firebase *firebaseRTDB) (*App, error) {
 	if err != nil {
 		return nil, fmt.Errorf("load static assets: %w", err)
 	}
-	googleOAuth, err := googleOAuthConfigFromEnv()
-	if err != nil {
-		return nil, err
+	superAdminEmail := normalizeEmail(os.Getenv("ICARE_SUPER_ADMIN_EMAIL"))
+	if superAdminEmail == "" {
+		superAdminEmail = "web@icare.local"
+	}
+	if firebase != nil && firebase.email != "" && normalizeEmail(firebase.email) != superAdminEmail {
+		return nil, errors.New("ICARE_FIREBASE_EMAIL must match ICARE_SUPER_ADMIN_EMAIL to access user profiles")
 	}
 
 	app := &App{
 		mux:             http.NewServeMux(),
 		templates:       make(map[string]*template.Template),
 		sessions:        make(map[string]Session),
-		googleOAuth:     googleOAuth,
 		googleStates:    make(map[string]googleOAuthState),
 		db:              db,
 		firebase:        firebase,
+		userFirebase:    firebase,
 		defaultDeviceID: strings.TrimSpace(os.Getenv("ICARE_DEFAULT_DEVICE_ID")),
+		superAdminEmail: superAdminEmail,
 		state: IrrigationState{
 			WaterLevel: 75,
 			FlowRate:   85,
@@ -263,13 +287,12 @@ func newAppWithDBAndFirebase(db *sql.DB, firebase *firebaseRTDB) (*App, error) {
 	app.mux.HandleFunc("POST /login", app.login)
 	app.mux.HandleFunc("GET /register", app.registerPage)
 	app.mux.HandleFunc("POST /register", app.register)
-	app.mux.HandleFunc("POST /auth/google", app.startGoogleOAuth)
-	app.mux.HandleFunc("GET /auth/google/callback", app.googleOAuthCallback)
 	app.mux.HandleFunc("POST /logout", app.logout)
 	app.mux.HandleFunc("GET /history", app.history)
 	app.mux.HandleFunc("GET /devices", app.devices)
 	app.mux.HandleFunc("GET /profile", app.profile)
 	app.mux.HandleFunc("POST /plots", app.addPlot)
+	app.mux.HandleFunc("POST /admin/plots", app.adminAddPlot)
 	app.mux.HandleFunc("POST /pump/mode", app.setPumpMode)
 	app.mux.HandleFunc("POST /pump/toggle", app.togglePump)
 	app.mux.HandleFunc("GET /ws/device", app.deviceWebSocket)
@@ -285,6 +308,8 @@ CREATE TABLE IF NOT EXISTS users (
 	phone TEXT NOT NULL,
 	password_salt BLOB NOT NULL,
 	password_hash BLOB NOT NULL,
+	role TEXT NOT NULL DEFAULT 'user',
+	firebase_uid TEXT NOT NULL DEFAULT '',
 	created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE TABLE IF NOT EXISTS petaks (
@@ -301,6 +326,23 @@ CREATE TABLE IF NOT EXISTS petaks (
 	}
 	if _, err := db.Exec(schema); err != nil {
 		return fmt.Errorf("initialize SQLite schema: %w", err)
+	}
+	for _, column := range []struct {
+		name string
+		sql  string
+	}{
+		{name: "role", sql: "ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'"},
+		{name: "firebase_uid", sql: "ALTER TABLE users ADD COLUMN firebase_uid TEXT NOT NULL DEFAULT ''"},
+	} {
+		var count int
+		if err := db.QueryRow("SELECT COUNT(*) FROM pragma_table_info('users') WHERE name = ?", column.name).Scan(&count); err != nil {
+			return fmt.Errorf("check users column %s: %w", column.name, err)
+		}
+		if count == 0 {
+			if _, err := db.Exec(column.sql); err != nil {
+				return fmt.Errorf("migrate users column %s: %w", column.name, err)
+			}
+		}
 	}
 	return nil
 }
@@ -483,12 +525,12 @@ func (a *App) dashboard(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	data, err := a.pageData(user, "Beranda")
+	data, err := a.pageData(r.Context(), user, "Beranda")
 	if err != nil {
 		http.Error(w, "Data petak tidak dapat dimuat.", http.StatusInternalServerError)
 		return
 	}
-	if !selectPetak(&data, r.URL.Query().Get("petak")) {
+	if !selectPetak(&data, r.URL.Query().Get("petak"), r.URL.Query().Get("owner_uid")) {
 		http.NotFound(w, r)
 		return
 	}
@@ -517,18 +559,66 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) {
 
 	email := normalizeEmail(r.FormValue("email"))
 	password := r.FormValue("password")
-	user, err := a.getUser(email)
-	exists := err == nil
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		http.Error(w, "Akun tidak dapat diperiksa. Coba lagi.", http.StatusInternalServerError)
+	if a.firebase == nil || a.firebase.apiKey == "" || a.userFirebase == nil {
+		a.render(w, "login", PageData{Title: "Masuk", IsAuth: true, Error: "Konfigurasi Firebase Auth belum tersedia."})
 		return
 	}
-	if !exists || !checkPassword(user.PasswordSalt, user.PasswordHash, password) {
+	auth, err := a.firebase.signInUserWithPassword(r.Context(), email, password)
+	if err != nil {
 		a.render(w, "login", PageData{
 			Title:  "Masuk",
 			IsAuth: true,
 			Error:  "Email atau kata sandi tidak sesuai.",
 		})
+		return
+	}
+
+	profile, found, err := a.userFirebase.getUserProfile(r.Context(), auth.LocalID)
+	if err != nil {
+		log.Printf("read Firebase user profile failed: %v", err)
+		http.Error(w, "Profil Firebase tidak dapat dibaca. Periksa rules Realtime Database.", http.StatusBadGateway)
+		return
+	}
+	if !found {
+		profile = firebaseUserProfile{
+			UID:    auth.LocalID,
+			Name:   strings.SplitN(auth.Email, "@", 2)[0],
+			Email:  auth.Email,
+			Role:   "user",
+			Petaks: make(map[string]firebaseUserPlot),
+		}
+	}
+	needsProfileWrite := !found
+	if profile.Email != auth.Email {
+		profile.Email = auth.Email
+		needsProfileWrite = true
+	}
+	if profile.Name == "" {
+		profile.Name = strings.SplitN(auth.Email, "@", 2)[0]
+		needsProfileWrite = true
+	}
+	role := "user"
+	if auth.Email == a.superAdminEmail {
+		role = "super_admin"
+	}
+	if profile.Role != role {
+		profile.Role = role
+		needsProfileWrite = true
+	}
+	if profile.Petaks == nil {
+		profile.Petaks = make(map[string]firebaseUserPlot)
+		needsProfileWrite = true
+	}
+	if needsProfileWrite {
+		if err := a.userFirebase.putUserProfile(r.Context(), profile); err != nil {
+			log.Printf("write Firebase user profile failed: %v", err)
+			http.Error(w, "Profil akun tidak dapat disimpan ke Firebase Realtime Database.", http.StatusBadGateway)
+			return
+		}
+	}
+	user, err := a.saveUserMirror(profile)
+	if err != nil {
+		http.Error(w, "Profil akun tidak dapat disiapkan.", http.StatusInternalServerError)
 		return
 	}
 
@@ -571,6 +661,9 @@ func (a *App) register(w http.ResponseWriter, r *http.Request) {
 	case !validEmail(email):
 		a.render(w, "register", PageData{Title: "Buat akun", IsAuth: true, Error: "Masukkan alamat email yang valid."})
 		return
+	case email == a.superAdminEmail:
+		a.render(w, "register", PageData{Title: "Buat akun", IsAuth: true, Error: "Akun super admin hanya dapat dibuat dan dikelola di Firebase Authentication."})
+		return
 	case phone == "":
 		a.render(w, "register", PageData{Title: "Buat akun", IsAuth: true, Error: "Nomor HP wajib diisi."})
 		return
@@ -585,55 +678,39 @@ func (a *App) register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	salt := make([]byte, 16)
-	if _, err := rand.Read(salt); err != nil {
-		http.Error(w, "Akun tidak dapat dibuat. Coba lagi.", http.StatusInternalServerError)
+	if a.firebase == nil || a.firebase.apiKey == "" || a.userFirebase == nil {
+		a.render(w, "register", PageData{Title: "Buat akun", IsAuth: true, Error: "Konfigurasi Firebase Auth belum tersedia."})
 		return
 	}
-	user := User{
-		Name:         name,
-		Email:        email,
-		Phone:        phone,
-		PasswordSalt: salt,
-		PasswordHash: pbkdf2SHA256([]byte(password), salt, passwordRounds, sha256.Size),
-	}
-
-	tx, err := a.db.Begin()
+	auth, err := a.firebase.signUpWithPassword(r.Context(), email, password)
 	if err != nil {
-		http.Error(w, "Akun tidak dapat dibuat. Coba lagi.", http.StatusInternalServerError)
-		return
-	}
-	result, err := tx.Exec(
-		"INSERT INTO users (email, name, phone, password_salt, password_hash) VALUES (?, ?, ?, ?, ?) ON CONFLICT(email) DO NOTHING",
-		user.Email, user.Name, user.Phone, user.PasswordSalt, user.PasswordHash,
-	)
-	if err != nil {
-		_ = tx.Rollback()
-		http.Error(w, "Akun tidak dapat dibuat. Coba lagi.", http.StatusInternalServerError)
-		return
-	}
-	inserted, err := result.RowsAffected()
-	if err != nil {
-		_ = tx.Rollback()
-		http.Error(w, "Akun tidak dapat dibuat. Coba lagi.", http.StatusInternalServerError)
-		return
-	}
-	if inserted == 0 {
-		_ = tx.Rollback()
-		a.render(w, "register", PageData{Title: "Buat akun", IsAuth: true, Error: "Email ini sudah terdaftar."})
-		return
-	}
-	if _, err := tx.Exec("INSERT INTO petaks (user_email, name) VALUES (?, ?)", email, "Petak A"); err != nil {
-		_ = tx.Rollback()
-		http.Error(w, "Petak awal tidak dapat dibuat. Coba lagi.", http.StatusInternalServerError)
-		return
-	}
-	if err := tx.Commit(); err != nil {
-		http.Error(w, "Akun tidak dapat dibuat. Coba lagi.", http.StatusInternalServerError)
+		message := "Akun Firebase tidak dapat dibuat."
+		if strings.Contains(err.Error(), "EMAIL_EXISTS") {
+			message = "Email ini sudah terdaftar di Firebase."
+		}
+		a.render(w, "register", PageData{Title: "Buat akun", IsAuth: true, Error: message})
 		return
 	}
 
-	if err := a.startSession(w, r, email); err != nil {
+	profile := firebaseUserProfile{
+		UID:    auth.LocalID,
+		Name:   name,
+		Email:  auth.Email,
+		Phone:  phone,
+		Role:   "user",
+		Petaks: make(map[string]firebaseUserPlot),
+	}
+	if err := a.userFirebase.putUserProfile(r.Context(), profile); err != nil {
+		log.Printf("write Firebase registration profile failed: %v", err)
+		http.Error(w, "Akun Firebase dibuat, tetapi profil tidak dapat disimpan ke Realtime Database. Periksa rules Firebase.", http.StatusBadGateway)
+		return
+	}
+	if _, err := a.saveUserMirror(profile); err != nil {
+		http.Error(w, "Akun tersimpan di Firebase tetapi profil lokal tidak dapat diperbarui.", http.StatusInternalServerError)
+		return
+	}
+
+	if err := a.startSession(w, r, auth.Email); err != nil {
 		http.Error(w, "Akun dibuat, tetapi sesi tidak dapat dimulai. Silakan masuk.", http.StatusInternalServerError)
 		return
 	}
@@ -663,12 +740,12 @@ func (a *App) history(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	data, err := a.pageData(user, "Riwayat")
+	data, err := a.pageData(r.Context(), user, "Riwayat")
 	if err != nil {
 		http.Error(w, "Data petak tidak dapat dimuat.", http.StatusInternalServerError)
 		return
 	}
-	if !selectPetak(&data, r.URL.Query().Get("petak")) {
+	if !selectPetak(&data, r.URL.Query().Get("petak"), r.URL.Query().Get("owner_uid")) {
 		http.NotFound(w, r)
 		return
 	}
@@ -719,16 +796,19 @@ func (a *App) history(w http.ResponseWriter, r *http.Request) {
 	if data.HasOlderHistory && len(cursors) == page-1 && data.HistoryOlderCursor != "" {
 		cursors = append(cursors, data.HistoryOlderCursor)
 	}
-	data.HistoryPageLinks = buildHistoryPageLinks(data.Petak, cursors)
+	data.HistoryPageLinks = buildHistoryPageLinks(data.Petak, data.PetakOwnerUID, cursors)
 	a.render(w, "history", data)
 }
 
-func buildHistoryPageLinks(petak string, cursors []string) []HistoryPageLink {
+func buildHistoryPageLinks(petak, ownerUID string, cursors []string) []HistoryPageLink {
 	links := make([]HistoryPageLink, 0, len(cursors)+1)
 	for page := 1; page <= len(cursors)+1; page++ {
 		query := url.Values{
 			"page":  {strconv.Itoa(page)},
 			"petak": {petak},
+		}
+		if ownerUID != "" {
+			query.Set("owner_uid", ownerUID)
 		}
 		for _, cursor := range cursors {
 			query.Add("cursor", cursor)
@@ -746,12 +826,16 @@ func (a *App) devices(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	data, err := a.pageData(user, "Perangkat")
+	if !a.isSuperAdmin(user) {
+		http.Redirect(w, r, "/", http.StatusSeeOther)
+		return
+	}
+	data, err := a.pageData(r.Context(), user, "Perangkat")
 	if err != nil {
 		http.Error(w, "Data petak tidak dapat dimuat.", http.StatusInternalServerError)
 		return
 	}
-	if !selectPetak(&data, r.URL.Query().Get("petak")) {
+	if !selectPetak(&data, r.URL.Query().Get("petak"), r.URL.Query().Get("owner_uid")) {
 		http.NotFound(w, r)
 		return
 	}
@@ -764,7 +848,11 @@ func (a *App) profile(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	data, err := a.pageData(user, "Profil")
+	if !a.isSuperAdmin(user) {
+		http.Redirect(w, r, "/", http.StatusSeeOther)
+		return
+	}
+	data, err := a.pageData(r.Context(), user, "Manajemen")
 	if err != nil {
 		http.Error(w, "Data petak tidak dapat dimuat.", http.StatusInternalServerError)
 		return
@@ -777,14 +865,19 @@ func (a *App) addPlot(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if !a.isSuperAdmin(user) {
+		http.Error(w, "Hanya super admin yang dapat menambah atau mengubah petak.", http.StatusForbidden)
+		return
+	}
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "Form tidak dapat dibaca.", http.StatusBadRequest)
 		return
 	}
 	name := strings.TrimSpace(r.FormValue("name"))
 	deviceID := strings.TrimSpace(r.FormValue("device_id"))
-	if name == "" || !utf8.ValidString(name) || len(name) > 50 || len(deviceID) > 128 {
-		data, err := a.pageData(user, "Beranda")
+	if name == "" || !utf8.ValidString(name) || len(name) > 50 || !validFirebaseKey(name) ||
+		len(deviceID) > 128 || (deviceID != "" && !validFirebaseKey(deviceID)) {
+		data, err := a.pageData(r.Context(), user, "Beranda")
 		if err != nil {
 			http.Error(w, "Data petak tidak dapat dimuat.", http.StatusInternalServerError)
 			return
@@ -793,27 +886,15 @@ func (a *App) addPlot(w http.ResponseWriter, r *http.Request) {
 		data.PlotName = name
 		data.DeviceID = deviceID
 		if selected := r.FormValue("petak"); selected != "" {
-			_ = selectPetak(&data, selected)
+			_ = selectPetak(&data, selected, r.FormValue("owner_uid"))
 		}
 		w.WriteHeader(http.StatusUnprocessableEntity)
 		a.render(w, "dashboard", data)
 		return
 	}
-	result, err := a.db.Exec(
-		"INSERT INTO petaks (user_email, name, device_id) VALUES (?, ?, ?) ON CONFLICT(user_email, name) DO NOTHING",
-		user.Email, name, deviceID,
-	)
-	if err != nil {
-		http.Error(w, "Petak tidak dapat disimpan. Coba lagi.", http.StatusInternalServerError)
-		return
-	}
-	inserted, err := result.RowsAffected()
-	if err != nil {
-		http.Error(w, "Petak tidak dapat disimpan. Coba lagi.", http.StatusInternalServerError)
-		return
-	}
-	if inserted == 0 {
-		data, err := a.pageData(user, "Beranda")
+	err := a.addFirebasePlot(r.Context(), user.FirebaseUID, name, deviceID)
+	if errors.Is(err, errFirebasePlotExists) {
+		data, err := a.pageData(r.Context(), user, "Beranda")
 		if err != nil {
 			http.Error(w, "Data petak tidak dapat dimuat.", http.StatusInternalServerError)
 			return
@@ -825,7 +906,50 @@ func (a *App) addPlot(w http.ResponseWriter, r *http.Request) {
 		a.render(w, "dashboard", data)
 		return
 	}
+	if err != nil {
+		log.Printf("add Firebase plot for %q: %v", user.FirebaseUID, err)
+		http.Error(w, "Petak tidak dapat disimpan ke Firebase Realtime Database.", http.StatusBadGateway)
+		return
+	}
 	http.Redirect(w, r, "/?petak="+url.QueryEscape(name), http.StatusSeeOther)
+}
+
+func (a *App) adminAddPlot(w http.ResponseWriter, r *http.Request) {
+	admin, ok := a.requireUser(w, r)
+	if !ok {
+		return
+	}
+	if !a.isSuperAdmin(admin) {
+		http.Error(w, "Hanya super admin yang dapat menambah petak.", http.StatusForbidden)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "Form tidak dapat dibaca.", http.StatusBadRequest)
+		return
+	}
+	uid := strings.TrimSpace(r.FormValue("user_uid"))
+	name := strings.TrimSpace(r.FormValue("name"))
+	deviceID := strings.TrimSpace(r.FormValue("device_id"))
+	if !validFirebaseKey(uid) || name == "" || !utf8.ValidString(name) || len(name) > 50 ||
+		!validFirebaseKey(name) || len(deviceID) > 128 || (deviceID != "" && !validFirebaseKey(deviceID)) {
+		http.Error(w, "Data petak atau pengguna tidak valid.", http.StatusUnprocessableEntity)
+		return
+	}
+	err := a.addFirebasePlot(r.Context(), uid, name, deviceID)
+	if errors.Is(err, sql.ErrNoRows) {
+		http.NotFound(w, r)
+		return
+	}
+	if errors.Is(err, errFirebasePlotExists) {
+		http.Redirect(w, r, "/profile?error=Petak+sudah+ada", http.StatusSeeOther)
+		return
+	}
+	if err != nil {
+		log.Printf("admin add Firebase plot for %q: %v", uid, err)
+		http.Error(w, "Petak tidak dapat disimpan ke Firebase Realtime Database.", http.StatusBadGateway)
+		return
+	}
+	http.Redirect(w, r, "/profile", http.StatusSeeOther)
 }
 
 func (a *App) setPumpMode(w http.ResponseWriter, r *http.Request) {
@@ -861,17 +985,7 @@ func (a *App) setPumpMode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	a.mu.Lock()
-	if a.state.Mode != mode {
-		a.state.Mode = mode
-		label := modeLabel(mode)
-		a.addEventLocked("Mode pompa diubah ke "+label, label)
-	}
-	if mode == "auto" {
-		a.applyAutomaticControlLocked()
-	}
-	a.mu.Unlock()
-	http.Redirect(w, r, "/", http.StatusSeeOther)
+	http.Error(w, "Petak belum ditautkan ke perangkat Firebase; kontrol simulasi lokal dinonaktifkan.", http.StatusConflict)
 }
 
 func (a *App) togglePump(w http.ResponseWriter, r *http.Request) {
@@ -932,15 +1046,7 @@ func (a *App) togglePump(w http.ResponseWriter, r *http.Request) {
 		}, "manual", boolPointer(targetPump), true, &snapshot)
 		return
 	}
-	a.mu.Lock()
-	a.state.PumpOn = !a.state.PumpOn
-	description := "Pompa mati"
-	if a.state.PumpOn {
-		description = "Pompa menyala"
-	}
-	a.addEventLocked(description, modeLabel(a.state.Mode))
-	a.mu.Unlock()
-	http.Redirect(w, r, "/", http.StatusSeeOther)
+	a.pumpCommandError(w, r, http.StatusConflict, "Petak belum ditautkan ke perangkat Firebase; kontrol simulasi lokal dinonaktifkan.")
 }
 
 type pumpCommandResult struct {
@@ -1023,6 +1129,9 @@ func (a *App) sendFirebasePumpCommand(w http.ResponseWriter, r *http.Request, pl
 	location := "/"
 	if r.FormValue("petak") != "" {
 		location += "?petak=" + url.QueryEscape(r.FormValue("petak"))
+		if ownerUID := r.FormValue("owner_uid"); ownerUID != "" {
+			location += "&owner_uid=" + url.QueryEscape(ownerUID)
+		}
 	}
 	http.Redirect(w, r, location, http.StatusSeeOther)
 }
@@ -1126,33 +1235,57 @@ func (a *App) startSession(w http.ResponseWriter, r *http.Request, email string)
 	return nil
 }
 
-func (a *App) pageData(user User, active string) (PageData, error) {
+func (a *App) pageData(ctx context.Context, user User, active string) (PageData, error) {
+	if a.userFirebase == nil {
+		return PageData{}, errors.New("Firebase Realtime Database is not configured")
+	}
 	a.mu.Lock()
 	state := a.state
-	events := append([]Activity(nil), state.Events...)
 	a.mu.Unlock()
-	plots, err := a.listPlots(user.Email)
+	profile, found, err := a.userFirebase.getUserProfile(ctx, user.FirebaseUID)
 	if err != nil {
 		return PageData{}, err
 	}
+	if !found {
+		return PageData{}, errors.New("Firebase user profile is missing")
+	}
+	plots := plotsFromFirebaseProfile(profile, a.defaultDeviceID)
+	isSuperAdmin := a.isSuperAdmin(user)
+	if isSuperAdmin {
+		profiles, err := a.userFirebase.listUserProfiles(ctx)
+		if err != nil {
+			return PageData{}, err
+		}
+		plots = append([]Plot(nil), plotsFromFirebaseProfile(profile, a.defaultDeviceID)...)
+		for _, otherProfile := range profiles {
+			if otherProfile.UID == profile.UID {
+				continue
+			}
+			plots = append(plots, plotsFromFirebaseProfile(otherProfile, a.defaultDeviceID)...)
+		}
+	}
 
-	name := user.Name
+	name := profile.Name
+	if name == "" {
+		name = user.Name
+	}
 	if name == "" {
 		name = "User"
 	}
 	chartNow := time.Now()
 	data := PageData{
-		Title:       active,
-		Active:      active,
-		Petaks:      plots,
-		UserName:    name,
-		UserEmail:   user.Email,
-		Initials:    initials(name),
-		Today:       indonesianDate(chartNow),
-		WaterLevel:  state.WaterLevel,
-		FlowRate:    state.FlowRate,
-		FlowPercent: state.FlowRate / 120 * 100,
-		Pressure:    state.Pressure,
+		Title:        active,
+		Active:       active,
+		Petaks:       plots,
+		UserName:     name,
+		UserEmail:    profile.Email,
+		IsSuperAdmin: isSuperAdmin,
+		Initials:     initials(name),
+		Today:        indonesianDate(chartNow),
+		WaterLevel:   state.WaterLevel,
+		FlowRate:     state.FlowRate,
+		FlowPercent:  state.FlowRate / 120 * 100,
+		Pressure:     state.Pressure,
 		PressureLabel: strings.ReplaceAll(
 			strconv.FormatFloat(state.Pressure, 'f', 1, 64),
 			".",
@@ -1161,19 +1294,28 @@ func (a *App) pageData(user User, active string) (PageData, error) {
 		PumpOn:       state.PumpOn,
 		Mode:         state.Mode,
 		ModeLabel:    modeLabel(state.Mode),
-		ChartPoints:  makeChartPoints([]float64{43, 58, 74, 64, 87, 93, 81, 100, 96, state.WaterLevel}),
+		ChartPoints:  "",
 		ChartStartMS: chartNow.Add(-24 * time.Hour).UnixMilli(),
 		ChartLabels:  chartTimeLabels(chartNow),
-		Events:       events,
+		Events:       nil,
 	}
 	if len(plots) > 0 {
 		data.Petak = plots[0].Name
+		data.PetakOwnerUID = plots[0].OwnerUID
+		data.PetakOwnerName = plots[0].OwnerName
+	}
+	if data.IsSuperAdmin {
+		adminUsers, err := a.listUsers(ctx)
+		if err != nil {
+			return PageData{}, err
+		}
+		data.AdminUsers = adminUsers
 	}
 	return data, nil
 }
 
 func (a *App) loadDeviceData(ctx context.Context, data *PageData, historyDirection, historyCursor string) {
-	plot := findPlot(data.Petaks, data.Petak)
+	plot := findPlot(data.Petaks, data.Petak, data.PetakOwnerUID)
 	if plot.DeviceID == "" {
 		return
 	}
@@ -1411,9 +1553,9 @@ func makeDeviceChartPoints(events []Activity, start time.Time) string {
 	return result.String()
 }
 
-func findPlot(plots []Plot, name string) Plot {
+func findPlot(plots []Plot, name, ownerUID string) Plot {
 	for _, plot := range plots {
-		if plot.Name == name {
+		if plot.Name == name && (ownerUID == "" || plot.OwnerUID == ownerUID) {
 			return plot
 		}
 	}
@@ -1421,16 +1563,34 @@ func findPlot(plots []Plot, name string) Plot {
 }
 
 func (a *App) selectedDevicePlot(user User, r *http.Request) (Plot, bool, error) {
-	plots, err := a.listPlots(user.Email)
+	if a.userFirebase == nil {
+		return Plot{}, false, errors.New("Firebase Realtime Database is not configured")
+	}
+	ownerUID := r.FormValue("owner_uid")
+	if ownerUID == "" {
+		ownerUID = r.URL.Query().Get("owner_uid")
+	}
+	profileUID := user.FirebaseUID
+	if ownerUID != "" && ownerUID != user.FirebaseUID {
+		if !a.isSuperAdmin(user) {
+			return Plot{}, false, sql.ErrNoRows
+		}
+		profileUID = ownerUID
+	}
+	profile, found, err := a.userFirebase.getUserProfile(r.Context(), profileUID)
 	if err != nil {
 		return Plot{}, false, err
 	}
+	if !found {
+		return Plot{}, false, sql.ErrNoRows
+	}
+	plots := plotsFromFirebaseProfile(profile, a.defaultDeviceID)
 	selected := r.FormValue("petak")
 	if selected == "" {
 		selected = r.URL.Query().Get("petak")
 	}
 	if selected != "" {
-		plot := findPlot(plots, selected)
+		plot := findPlot(plots, selected, profileUID)
 		if plot.Name == "" {
 			return Plot{}, false, sql.ErrNoRows
 		}
@@ -1445,42 +1605,103 @@ func (a *App) selectedDevicePlot(user User, r *http.Request) (Plot, bool, error)
 func (a *App) getUser(email string) (User, error) {
 	var user User
 	err := a.db.QueryRow(
-		"SELECT name, email, phone, password_salt, password_hash FROM users WHERE email = ?",
+		"SELECT name, email, phone, password_salt, password_hash, role, firebase_uid FROM users WHERE email = ?",
 		email,
-	).Scan(&user.Name, &user.Email, &user.Phone, &user.PasswordSalt, &user.PasswordHash)
+	).Scan(&user.Name, &user.Email, &user.Phone, &user.PasswordSalt, &user.PasswordHash, &user.Role, &user.FirebaseUID)
 	return user, err
 }
 
-func (a *App) listPlots(email string) ([]Plot, error) {
-	rows, err := a.db.Query("SELECT name, device_id FROM petaks WHERE user_email = ? ORDER BY id", email)
+func (a *App) saveUserMirror(profile firebaseUserProfile) (User, error) {
+	_, err := a.db.Exec(
+		"INSERT INTO users (email, name, phone, password_salt, password_hash, role, firebase_uid) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(email) DO UPDATE SET role = excluded.role, firebase_uid = excluded.firebase_uid",
+		profile.Email, profile.Name, profile.Phone, []byte{}, []byte{}, profile.Role, profile.UID,
+	)
+	if err != nil {
+		return User{}, fmt.Errorf("save Firebase user mirror: %w", err)
+	}
+	return a.getUser(profile.Email)
+}
+
+func (a *App) isSuperAdmin(user User) bool {
+	return normalizeEmail(user.Email) == a.superAdminEmail
+}
+
+func (a *App) listUsers(ctx context.Context) ([]AdminUser, error) {
+	if a.userFirebase == nil {
+		return nil, errors.New("Firebase Realtime Database is not configured")
+	}
+	profiles, err := a.userFirebase.listUserProfiles(ctx)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	var plots []Plot
-	for rows.Next() {
-		var plot Plot
-		if err := rows.Scan(&plot.Name, &plot.DeviceID); err != nil {
-			return nil, err
+	users := make([]AdminUser, 0, len(profiles))
+	for _, profile := range profiles {
+		if profile.Email == a.superAdminEmail || profile.Role == "super_admin" {
+			continue
 		}
-		if plot.DeviceID == "" {
-			plot.DeviceID = a.defaultDeviceID
-		}
-		plots = append(plots, plot)
+		users = append(users, AdminUser{
+			UID:   profile.UID,
+			Email: profile.Email,
+			Name:  profile.Name,
+			Phone: profile.Phone,
+			Role:  "user",
+		})
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return plots, nil
+	return users, nil
 }
 
-func selectPetak(data *PageData, name string) bool {
+func (a *App) addFirebasePlot(ctx context.Context, uid, name, deviceID string) error {
+	if a.userFirebase == nil {
+		return errors.New("Firebase Realtime Database is not configured")
+	}
+	profile, found, err := a.userFirebase.getUserProfile(ctx, uid)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return sql.ErrNoRows
+	}
+	if _, exists := profile.Petaks[name]; exists {
+		return errFirebasePlotExists
+	}
+	return a.userFirebase.putUserPlot(ctx, uid, name, deviceID)
+}
+
+func plotsFromFirebaseProfile(profile firebaseUserProfile, defaultDeviceID string) []Plot {
+	names := make([]string, 0, len(profile.Petaks))
+	for name := range profile.Petaks {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	plots := make([]Plot, 0, len(names))
+	ownerName := profile.Name
+	if ownerName == "" {
+		ownerName = profile.Email
+	}
+	for _, name := range names {
+		deviceID := profile.Petaks[name].DeviceID
+		if deviceID == "" {
+			deviceID = defaultDeviceID
+		}
+		plots = append(plots, Plot{
+			Name:      name,
+			DeviceID:  deviceID,
+			OwnerUID:  profile.UID,
+			OwnerName: ownerName,
+		})
+	}
+	return plots
+}
+
+func selectPetak(data *PageData, name, ownerUID string) bool {
 	if name == "" {
 		return true
 	}
 	for _, plot := range data.Petaks {
-		if plot.Name == name {
+		if plot.Name == name && (ownerUID == "" || plot.OwnerUID == ownerUID) {
 			data.Petak = name
+			data.PetakOwnerUID = plot.OwnerUID
+			data.PetakOwnerName = plot.OwnerName
 			return true
 		}
 	}

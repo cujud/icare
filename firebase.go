@@ -26,6 +26,7 @@ const defaultFirebaseDevicesPath = "devices"
 
 type firebaseRTDB struct {
 	databaseURL   string
+	authBaseURL   string
 	authToken     string
 	apiKey        string
 	refreshToken  string
@@ -114,6 +115,27 @@ type devicePumpDesiredUpdate struct {
 	UpdatedAtMS int64 `json:"updatedAtMs"`
 }
 
+type firebaseAuthResult struct {
+	LocalID      string `json:"localId"`
+	IDToken      string `json:"idToken"`
+	RefreshToken string `json:"refreshToken"`
+	ExpiresIn    string `json:"expiresIn"`
+	Email        string `json:"email"`
+}
+
+type firebaseUserPlot struct {
+	DeviceID string `json:"device_id"`
+}
+
+type firebaseUserProfile struct {
+	UID    string                      `json:"uid"`
+	Name   string                      `json:"name"`
+	Email  string                      `json:"email"`
+	Phone  string                      `json:"phone"`
+	Role   string                      `json:"role"`
+	Petaks map[string]firebaseUserPlot `json:"petaks,omitempty"`
+}
+
 func newFirebaseRTDBFromEnv() (*firebaseRTDB, error) {
 	databaseURL := strings.TrimRight(strings.TrimSpace(os.Getenv("ICARE_FIREBASE_DATABASE_URL")), "/")
 	if databaseURL == "" {
@@ -129,6 +151,7 @@ func newFirebaseRTDBFromEnv() (*firebaseRTDB, error) {
 	}
 	return &firebaseRTDB{
 		databaseURL:   databaseURL,
+		authBaseURL:   "https://identitytoolkit.googleapis.com",
 		authToken:     strings.TrimSpace(os.Getenv("ICARE_FIREBASE_AUTH_TOKEN")),
 		apiKey:        strings.TrimSpace(os.Getenv("ICARE_FIREBASE_API_KEY")),
 		refreshToken:  strings.TrimSpace(os.Getenv("ICARE_FIREBASE_REFRESH_TOKEN")),
@@ -192,6 +215,139 @@ func (f *firebaseRTDB) canWrite() bool {
 	return !f.anonymousRead && (f.authToken != "" ||
 		(f.refreshToken != "" && f.apiKey != "") ||
 		(f.email != "" && f.password != "" && f.apiKey != ""))
+}
+
+func (f *firebaseRTDB) getUserProfile(ctx context.Context, uid string) (firebaseUserProfile, bool, error) {
+	var profile *firebaseUserProfile
+	if !validFirebaseKey(uid) {
+		return firebaseUserProfile{}, false, errors.New("Firebase user ID is not a valid database key")
+	}
+	request, err := f.newRequest(ctx, http.MethodGet, f.userURL(uid), nil)
+	if err != nil {
+		return firebaseUserProfile{}, false, err
+	}
+	client := f.httpClient
+	if client == nil {
+		client = http.DefaultClient
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		return firebaseUserProfile{}, false, errors.New("read Firebase user profile: network request failed")
+	}
+	defer response.Body.Close()
+	if response.StatusCode == http.StatusNotFound {
+		return firebaseUserProfile{}, false, nil
+	}
+	if response.StatusCode != http.StatusOK {
+		return firebaseUserProfile{}, false, firebaseResponseError("read user profile", response)
+	}
+	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&profile); err != nil {
+		return firebaseUserProfile{}, false, fmt.Errorf("decode Firebase user profile: %w", err)
+	}
+	if profile == nil {
+		return firebaseUserProfile{}, false, nil
+	}
+	profile.UID = uid
+	if profile.Petaks == nil {
+		profile.Petaks = make(map[string]firebaseUserPlot)
+	}
+	return *profile, true, nil
+}
+
+func (f *firebaseRTDB) listUserProfiles(ctx context.Context) ([]firebaseUserProfile, error) {
+	request, err := f.newRequest(ctx, http.MethodGet, f.usersURL(), nil)
+	if err != nil {
+		return nil, err
+	}
+	client := f.httpClient
+	if client == nil {
+		client = http.DefaultClient
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		return nil, errors.New("read Firebase user profiles: network request failed")
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return nil, firebaseResponseError("list user profiles", response)
+	}
+	var profiles map[string]firebaseUserProfile
+	if err := json.NewDecoder(io.LimitReader(response.Body, 4<<20)).Decode(&profiles); err != nil {
+		return nil, fmt.Errorf("decode Firebase user profiles: %w", err)
+	}
+	users := make([]firebaseUserProfile, 0, len(profiles))
+	for uid, profile := range profiles {
+		profile.UID = uid
+		if profile.Petaks == nil {
+			profile.Petaks = make(map[string]firebaseUserPlot)
+		}
+		users = append(users, profile)
+	}
+	sort.Slice(users, func(i, j int) bool { return users[i].Email < users[j].Email })
+	return users, nil
+}
+
+func (f *firebaseRTDB) putUserProfile(ctx context.Context, profile firebaseUserProfile) error {
+	if !f.canWrite() {
+		return errors.New("Firebase authenticated write credentials are required for user profiles")
+	}
+	if !validFirebaseKey(profile.UID) {
+		return errors.New("Firebase user ID is not a valid database key")
+	}
+	payload, err := json.Marshal(profile)
+	if err != nil {
+		return fmt.Errorf("encode Firebase user profile: %w", err)
+	}
+	request, err := f.newRequest(ctx, http.MethodPut, f.userURL(profile.UID), bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	client := f.httpClient
+	if client == nil {
+		client = http.DefaultClient
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		return errors.New("write Firebase user profile: network request failed")
+	}
+	defer response.Body.Close()
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		return firebaseResponseError("write user profile", response)
+	}
+	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
+	return nil
+}
+
+func (f *firebaseRTDB) putUserPlot(ctx context.Context, uid, name, deviceID string) error {
+	if !f.canWrite() {
+		return errors.New("Firebase authenticated write credentials are required for user plots")
+	}
+	if !validFirebaseKey(uid) || !validFirebaseKey(name) || len(deviceID) > 128 ||
+		(deviceID != "" && !validFirebaseKey(deviceID)) {
+		return errors.New("Firebase user plot contains an invalid database key")
+	}
+	payload, err := json.Marshal(firebaseUserPlot{DeviceID: deviceID})
+	if err != nil {
+		return fmt.Errorf("encode Firebase user plot: %w", err)
+	}
+	request, err := f.newRequest(ctx, http.MethodPut, f.userPlotURL(uid, name), bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	client := f.httpClient
+	if client == nil {
+		client = http.DefaultClient
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		return errors.New("write Firebase user plot: network request failed")
+	}
+	defer response.Body.Close()
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		return firebaseResponseError("write user plot", response)
+	}
+	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
+	return nil
 }
 
 func (f *firebaseRTDB) updateDeviceDesired(ctx context.Context, deviceID string, update devicePumpDesiredUpdate) error {
@@ -379,6 +535,18 @@ func (f *firebaseRTDB) deviceBranchURL(deviceID, branch string) string {
 	return f.databaseURL + "/" + f.devicesPath + "/" + url.PathEscape(deviceID) + "/" + branch + ".json"
 }
 
+func (f *firebaseRTDB) usersURL() string {
+	return strings.TrimRight(f.databaseURL, "/") + "/users.json"
+}
+
+func (f *firebaseRTDB) userURL(uid string) string {
+	return strings.TrimRight(f.databaseURL, "/") + "/users/" + url.PathEscape(uid) + ".json"
+}
+
+func (f *firebaseRTDB) userPlotURL(uid, name string) string {
+	return strings.TrimRight(f.databaseURL, "/") + "/users/" + url.PathEscape(uid) + "/petaks/" + url.PathEscape(name) + ".json"
+}
+
 type firebaseStreamEvent struct {
 	Type string          `json:"-"`
 	Path string          `json:"path"`
@@ -554,6 +722,96 @@ func (f *firebaseRTDB) accessToken(ctx context.Context) (string, error) {
 		f.refreshToken = result.RefreshToken
 	}
 	return f.authToken, nil
+}
+
+func (f *firebaseRTDB) signUpWithPassword(ctx context.Context, email, password string) (firebaseAuthResult, error) {
+	var result firebaseAuthResult
+	if f == nil || f.apiKey == "" {
+		return result, errors.New("ICARE_FIREBASE_API_KEY is required for Firebase account registration")
+	}
+	payload, err := json.Marshal(map[string]any{
+		"email":             email,
+		"password":          password,
+		"returnSecureToken": true,
+	})
+	if err != nil {
+		return result, errors.New("create Firebase registration request")
+	}
+	authBaseURL := strings.TrimRight(f.authBaseURL, "/")
+	if authBaseURL == "" {
+		authBaseURL = "https://identitytoolkit.googleapis.com"
+	}
+	requestURL := authBaseURL + "/v1/accounts:signUp?key=" + url.QueryEscape(f.apiKey)
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, requestURL, strings.NewReader(string(payload)))
+	if err != nil {
+		return result, errors.New("create Firebase registration request")
+	}
+	request.Header.Set("Content-Type", "application/json")
+	httpClient := f.httpClient
+	if httpClient == nil {
+		httpClient = http.DefaultClient
+	}
+	response, err := httpClient.Do(request)
+	if err != nil {
+		return result, errors.New("Firebase registration network request failed")
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return result, firebaseResponseError("Firebase account registration", response)
+	}
+	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&result); err != nil {
+		return result, errors.New("decode Firebase registration response")
+	}
+	if result.LocalID == "" || !validEmail(strings.TrimSpace(result.Email)) {
+		return firebaseAuthResult{}, errors.New("Firebase returned an invalid account response")
+	}
+	result.Email = normalizeEmail(result.Email)
+	return result, nil
+}
+
+func (f *firebaseRTDB) signInUserWithPassword(ctx context.Context, email, password string) (firebaseAuthResult, error) {
+	var result firebaseAuthResult
+	if f == nil || f.apiKey == "" {
+		return result, errors.New("ICARE_FIREBASE_API_KEY is required for Firebase login")
+	}
+	payload, err := json.Marshal(map[string]any{
+		"email":             email,
+		"password":          password,
+		"returnSecureToken": true,
+	})
+	if err != nil {
+		return result, errors.New("create Firebase login request")
+	}
+	authBaseURL := strings.TrimRight(f.authBaseURL, "/")
+	if authBaseURL == "" {
+		authBaseURL = "https://identitytoolkit.googleapis.com"
+	}
+	requestURL := authBaseURL + "/v1/accounts:signInWithPassword?key=" + url.QueryEscape(f.apiKey)
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, requestURL, strings.NewReader(string(payload)))
+	if err != nil {
+		return result, errors.New("create Firebase login request")
+	}
+	request.Header.Set("Content-Type", "application/json")
+	httpClient := f.httpClient
+	if httpClient == nil {
+		httpClient = http.DefaultClient
+	}
+	response, err := httpClient.Do(request)
+	if err != nil {
+		return result, errors.New("Firebase login network request failed")
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return result, firebaseResponseError("Firebase login", response)
+	}
+	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&result); err != nil {
+		return result, errors.New("decode Firebase login response")
+	}
+	if result.LocalID == "" || !validEmail(strings.TrimSpace(result.Email)) {
+		return firebaseAuthResult{}, errors.New("Firebase returned an invalid login response")
+	}
+	result.Email = normalizeEmail(result.Email)
+	return result, nil
 }
 
 // signInWithPasswordLocked masuk ke Firebase Auth memakai email+password akun

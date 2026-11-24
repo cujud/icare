@@ -1,9 +1,9 @@
 {{define "content"}}
 <div class="page-heading">
   <div>
-    <p class="eyebrow">PENGATURAN AKUN</p>
-    <h1>Profil</h1>
-    <p class="muted">Informasi akun iCare Anda.</p>
+    <p class="eyebrow">MANAJEMEN USER &amp; PETAK</p>
+    <h1>Manajemen</h1>
+    <p class="muted">Kelola akun pengguna dan petak yang terhubung ke perangkat.</p>
   </div>
 </div>
 <section class="card profile-card">
@@ -15,8 +15,35 @@
   </div>
 </section>
 <section class="card profile-info">
-  <h2>Lingkungan prototipe</h2>
-  <p class="muted">Data akun, sesi, status pompa, dan aktivitas disimpan di memori selama server berjalan. Gunakan hanya untuk pengujian lokal, bukan untuk data produksi.</p>
+  <h2>Akses akun</h2>
+  {{if .IsSuperAdmin}}
+  <p class="muted">Anda login sebagai super admin dan dapat menambahkan petak untuk setiap pengguna.</p>
+  {{else}}
+  <p class="muted">Akun Anda adalah pengguna biasa. Petak dan perangkat hanya dapat ditambahkan oleh super admin.</p>
+  {{end}}
   <form method="post" action="/logout"><button class="button button-outline" type="submit">Keluar dari akun</button></form>
 </section>
+{{if .IsSuperAdmin}}
+<section class="card profile-info">
+  <h2>Kelola petak pengguna</h2>
+  {{if .AdminUsers}}
+  <form method="post" action="/admin/plots" class="plot-form">
+    <label>Email pengguna
+      <select name="user_uid" required>
+        {{range .AdminUsers}}<option value="{{.UID}}">{{.Name}} · {{.Email}}</option>{{end}}
+      </select>
+    </label>
+    <label>Nama petak
+      <input name="name" maxlength="50" placeholder="Contoh: Petak A" required>
+    </label>
+    <label>ID perangkat Firebase
+      <input name="device_id" maxlength="128" placeholder="Contoh: ESP32_Gateway">
+    </label>
+    <button class="button button-primary" type="submit">Tambah petak</button>
+  </form>
+  {{else}}
+  <p class="muted">Belum ada pengguna terdaftar.</p>
+  {{end}}
+</section>
+{{end}}
 {{end}}

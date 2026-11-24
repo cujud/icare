@@ -12,23 +12,21 @@ Buka `http://127.0.0.1:18081`, lalu buat akun dari halaman **Daftar gratis**. Se
 
 ## Cakupan prototipe
 
-- Halaman masuk dan pendaftaran dengan validasi formulir serta kata sandi yang di-hash.
-- Pendaftaran dan masuk dengan Google OAuth; email Google terverifikasi digunakan untuk membuat atau menghubungkan akun iCare lokal.
+- Registrasi dan masuk akun email/kata sandi menggunakan Firebase Authentication; profil, peran, dan petak bersumber dari Firebase Realtime Database pada `/users/{uid}`.
+- Login Google sementara dinonaktifkan sampai dapat membuat akun Firebase Auth dan profil Realtime Database secara konsisten.
+- Satu super admin mengelola petak pengguna; akun user baru tidak dapat menambah atau mengubah petak.
+- Super admin dapat memantau dan mengontrol pompa pada semua petak yang sudah ditautkan ke akun pengguna; user biasa tetap hanya dapat mengakses petaknya sendiri.
+- Menu Manajemen dan Perangkat hanya tersedia untuk super admin. User biasa hanya mendapat Statistik, kontrol pompa pada dashboard, serta Riwayat.
 - Dashboard dan halaman Perangkat membaca status terbaru dari Firebase Realtime Database untuk petak yang memiliki ID perangkat.
 - Halaman Riwayat mengambil maksimal 50 catatan per halaman di server menggunakan cursor Firebase; halaman berikut/sebelumnya tidak memuat seluruh riwayat.
 - Dashboard menampilkan grafik pembacaan tinggi air 24 jam dan lima aktivitas terakhir dari riwayat perangkat.
 - Dashboard dan Riwayat menerima pembaruan Firebase lewat WebSocket; nilai sensor, status koneksi/node/pompa, waktu pembaruan, grafik, dan aktivitas diperbarui tanpa memuat ulang halaman.
 - Navigasi Beranda, Riwayat, Perangkat, dan Profil.
-- Petak disimpan bersama ID perangkat Firebase opsional.
-- Akun dan data petak disimpan di SQLite (`icare.db` secara default); lokasi file dapat diubah dengan `ICARE_DB_PATH`.
+- SQLite (`icare.db` secara default) menyimpan mirror lokal untuk sesi dan mendukung data lama; data profil/petak lama tidak otomatis dipindahkan. Lokasi file dapat diubah dengan `ICARE_DB_PATH`.
 - Tab Notifikasi dan Pengaturan pada sidebar adalah placeholder visual dengan efek hover.
-- Kontrol mode/pompa simulasi tersedia untuk petak tanpa perangkat tertaut. Perangkat Firebase menggunakan node `desired`; kontrol relay hanya aktif pada mode manual dan setelah status pompa tersedia.
+- Kontrol mode/pompa perangkat memakai node Firebase `desired`; kontrol relay hanya aktif pada mode manual dan setelah status pompa tersedia. Petak tanpa ID perangkat tidak memakai simulasi lokal.
 - Tombol dinonaktifkan selama perintah dikirim dan tetap menunggu konfirmasi terbaru dari `status_pompa` sebelum bisa digunakan kembali.
 - Tampilan responsif untuk desktop dan ponsel.
-
-### Google OAuth
-
-Atur `ICARE_GOOGLE_CLIENT_ID`, `ICARE_GOOGLE_CLIENT_SECRET`, dan `ICARE_GOOGLE_REDIRECT_URL` di environment server atau file `.env`. Daftarkan redirect URI yang sama di Google Cloud OAuth client; path callback aplikasi adalah `/auth/google/callback`. Google hanya digunakan untuk memverifikasi identitas. Akun dan sesi tetap dikelola aplikasi iCare; akun baru mendapat petak awal dan dapat melengkapi nomor HP di profil. Jangan commit client secret.
 
 ## Firebase Realtime Database
 
@@ -106,20 +104,53 @@ Mode anonim tidak mengirim API key atau token; Firebase Realtime Database Rules 
 
 ### Rules dibatasi UID (cara yang dipakai project ini)
 
-Isi `.env` (lihat `.env.example`):
+Isi file `.env` di direktori kerja server:
 
 ```dotenv
 ICARE_FIREBASE_API_KEY=<Web API key>
 ICARE_FIREBASE_EMAIL=<email akun Firebase Auth dengan UID yang diizinkan rules>
 ICARE_FIREBASE_PASSWORD=<password akun tersebut>
 ICARE_DEFAULT_DEVICE_ID=ESP32_Gateway
+ICARE_SUPER_ADMIN_EMAIL=web@icare.local
 ```
 
 Backend login ke Firebase Auth (email/password) di sisi server, menyimpan ID token di memori, lalu memperbaruinya otomatis dengan refresh token. Kredensial tidak pernah dikirim ke browser. `ICARE_DEFAULT_DEVICE_ID` membuat petak tanpa ID perangkat otomatis membaca perangkat tersebut sehingga data demo tidak tampil.
 
 Jika memakai rules yang membatasi UID, jangan aktifkan mode anonim: isi `ICARE_FIREBASE_AUTH_TOKEN` dengan Firebase ID token yang masih berlaku, atau gunakan pasangan API key dan refresh token dari akun dengan UID yang diizinkan.
 
-Tanpa akses baca Firebase atau ID perangkat tertaut, aplikasi memakai fixture lokal (75 cm, 85 L/mnt, dan 1,2 bar) serta simulasi pompa. Sesi, akun, petak, dan aktivitas simulasi masih dikelola lokal; sesi berakhir saat server dimulai ulang. Prototipe ini tidak ditujukan untuk deployment produksi.
+Super admin ditentukan oleh `ICARE_SUPER_ADMIN_EMAIL`; jika tidak disetel, defaultnya `web@icare.local`. Atur variabel ini ke email akun Firebase yang menjadi satu-satunya super admin. Akun baru dipasang sebagai `user` dan hanya super admin yang dapat menambah petak melalui halaman Profil.
+
+Profil dan petak disimpan di `/users/{uid}`. Gabungkan aturan berikut ke root Realtime Database Rules yang sudah ada; jangan mengganti aturan `devices` yang sekarang. Email akun server (`ICARE_FIREBASE_EMAIL`) harus sama dengan email super admin karena server memakai akun tersebut untuk membaca dan menulis profil:
+
+```json
+{
+  "name": "Nama pengguna",
+  "email": "user@example.com",
+  "phone": "08xxxxxxxxxx",
+  "role": "user",
+  "petaks": {
+    "Petak A": {
+      "device_id": "ESP32_Gateway"
+    }
+  }
+}
+```
+
+Password hanya disimpan oleh Firebase Authentication dan tidak ditulis ke Realtime Database.
+
+```json
+"users": {
+  ".read": "auth != null && auth.token.email === 'web@icare.local'",
+  ".write": "auth != null && auth.token.email === 'web@icare.local'",
+  "$uid": {
+    ".read": "auth != null && auth.uid === $uid"
+  }
+}
+```
+
+Ganti `web@icare.local` jika `ICARE_SUPER_ADMIN_EMAIL` diubah. Dengan aturan ini, akun hanya dapat membaca profilnya sendiri; penulisan profil dan petak dilakukan oleh backend yang masuk menggunakan akun super admin. Petak lama yang masih ada di SQLite tidak otomatis dipindah atau dihapus.
+
+Setiap akun baru perlu mendapat petak dari super admin dengan ID perangkat Firebase yang benar. Jika belum ada petak/perangkat, dashboard menampilkan status menunggu dan tidak menampilkan fixture sensor seolah-olah data realtime.
 
 ## Pemeriksaan
 

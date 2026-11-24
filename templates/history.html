@@ -3,11 +3,11 @@
   <div>
     <p class="eyebrow">CATATAN PEMANTAUAN</p>
     <h1>Riwayat</h1>
-    <p class="hero-date">Catatan pemantauan Sawah · {{.Petak}}</p>
+    <p class="hero-date">Catatan pemantauan Sawah · {{.Petak}}{{if and .IsSuperAdmin .PetakOwnerName}} · {{.PetakOwnerName}}{{end}}</p>
   </div>
   <div class="hero-actions">
-    <span class="hero-connection"><span class="status-dot" data-realtime-dot></span><span data-realtime-status>{{if .FirebaseConnected}}Realtime aktif{{else if .LinkedDeviceID}}Firebase offline{{else}}Data demo{{end}}</span></span>
-    <a class="hero-profile" href="/profile" aria-label="Buka profil {{.UserName}}"><span>{{.Initials}}</span></a>
+    <span class="hero-connection"><span class="status-dot" data-realtime-dot></span><span data-realtime-status>{{if .FirebaseConnected}}Realtime aktif{{else if .LinkedDeviceID}}Firebase offline{{else}}Menunggu petak perangkat{{end}}</span></span>
+    {{if .IsSuperAdmin}}<a class="hero-profile" href="/profile" aria-label="Buka manajemen"><span>{{.Initials}}</span></a>{{else}}<span class="hero-profile" aria-label="Akun {{.UserName}}"><span>{{.Initials}}</span></span>{{end}}
   </div>
 </header>
 {{if .DeviceError}}<p class="alert" role="alert">{{.DeviceError}}</p>{{end}}
@@ -24,7 +24,7 @@
     </table>
   </div>
   {{else}}
-    <p class="empty-state">{{if .FirebaseConnected}}Belum ada riwayat perangkat.{{else if .LinkedDeviceID}}Riwayat tidak tersedia selama perangkat belum terhubung.{{else}}Belum ada aktivitas pompa.{{end}}</p>
+    <p class="empty-state">{{if .FirebaseConnected}}Belum ada riwayat perangkat.{{else if .LinkedDeviceID}}Riwayat tidak tersedia selama perangkat belum terhubung.{{else}}Riwayat akan tersedia setelah super admin menautkan petak ke perangkat.{{end}}</p>
   {{end}}
   {{if gt (len .HistoryPageLinks) 1}}
   <nav class="history-pagination" aria-label="Navigasi halaman riwayat">
@@ -38,5 +38,5 @@
   </nav>
   {{end}}
 </section>
-<p class="demo-hint page-hint">{{if .FirebaseConnected}}Maksimal 50 catatan dimuat per halaman langsung dari <code>devices/{{.LinkedDeviceID}}/riwayat</code>.{{else if .LinkedDeviceID}}Riwayat sensor dibaca dari Firebase setelah koneksi pulih.{{else}}Riwayat demo tersimpan di memori dan akan direset saat server dimulai ulang.{{end}}</p>
+<p class="demo-hint page-hint">{{if .FirebaseConnected}}Maksimal 50 catatan dimuat per halaman langsung dari <code>devices/{{.LinkedDeviceID}}/riwayat</code>.{{else if .LinkedDeviceID}}Riwayat sensor dibaca dari Firebase setelah koneksi pulih.{{else}}Data riwayat belum tersedia karena akun ini belum memiliki petak perangkat.{{end}}</p>
 {{end}}

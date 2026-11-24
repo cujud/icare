@@ -60,6 +60,38 @@ func TestFirebaseReadsDeviceSnapshot(t *testing.T) {
 	}
 }
 
+func TestFirebaseStoresUserProfilesAndPlots(t *testing.T) {
+	client := newTestUserFirebase(t)
+	profile := firebaseUserProfile{
+		UID:    "firebase-user-1",
+		Name:   "Petani",
+		Email:  "farmer@example.com",
+		Phone:  "08123456789",
+		Role:   "user",
+		Petaks: map[string]firebaseUserPlot{},
+	}
+	if err := client.putUserProfile(context.Background(), profile); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.putUserPlot(context.Background(), profile.UID, "Petak A", "ESP32_Gateway"); err != nil {
+		t.Fatal(err)
+	}
+	got, found, err := client.getUserProfile(context.Background(), profile.UID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found || got.Name != profile.Name || got.Email != profile.Email || got.Petaks["Petak A"].DeviceID != "ESP32_Gateway" {
+		t.Fatalf("Firebase profile = %+v, found = %t", got, found)
+	}
+	users, err := client.listUserProfiles(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(users) != 1 || users[0].UID != profile.UID {
+		t.Fatalf("Firebase users = %+v, want the one stored profile", users)
+	}
+}
+
 func TestFirebaseReadRequiresCredentialsForAuthRestrictedRules(t *testing.T) {
 	client := &firebaseRTDB{}
 	if client.ready() {
@@ -147,9 +179,7 @@ func TestDashboardUsesFirebaseDeviceSnapshot(t *testing.T) {
 	app := newTestApp(t)
 	const token = "firebase-dashboard-session"
 	seedTestUser(t, app, token)
-	if _, err := app.db.Exec("UPDATE petaks SET device_id = ? WHERE user_email = ?", "farm-1", "farmer@example.com"); err != nil {
-		t.Fatal(err)
-	}
+	setTestPlotDevice(t, app, "Petak A", "farm-1")
 	app.firebase = &firebaseRTDB{
 		databaseURL: server.URL,
 		authToken:   "test-id-token",
@@ -184,9 +214,7 @@ func TestHistoryUsesFirebaseExportRecords(t *testing.T) {
 	app := newTestApp(t)
 	const token = "firebase-history-session"
 	seedTestUser(t, app, token)
-	if _, err := app.db.Exec("UPDATE petaks SET device_id = ? WHERE user_email = ?", "farm-1", "farmer@example.com"); err != nil {
-		t.Fatal(err)
-	}
+	setTestPlotDevice(t, app, "Petak A", "farm-1")
 	app.firebase = &firebaseRTDB{
 		databaseURL: server.URL,
 		authToken:   "test-id-token",
@@ -255,9 +283,7 @@ func TestHistoryPageRendersNumberedCursorPagination(t *testing.T) {
 	app := newTestApp(t)
 	const token = "history-pagination-session"
 	seedTestUser(t, app, token)
-	if _, err := app.db.Exec("UPDATE petaks SET device_id = ? WHERE user_email = ?", "farm-1", "farmer@example.com"); err != nil {
-		t.Fatal(err)
-	}
+	setTestPlotDevice(t, app, "Petak A", "farm-1")
 	app.firebase = &firebaseRTDB{databaseURL: firebaseServer.URL, authToken: "test-token", devicesPath: "devices", httpClient: firebaseServer.Client()}
 
 	request := httptest.NewRequest(http.MethodGet, "/history", nil)
@@ -267,7 +293,7 @@ func TestHistoryPageRendersNumberedCursorPagination(t *testing.T) {
 	if got := strings.Count(response.Body.String(), "data-event-key="); got != 50 {
 		t.Fatalf("first page row count = %d, want 50", got)
 	}
-	if !strings.Contains(response.Body.String(), `href="/history?cursor=key-070&amp;page=2`) {
+	if !strings.Contains(response.Body.String(), `href="/history?cursor=key-070&amp;owner_uid=test-firebase-uid&amp;page=2`) {
 		t.Fatal("first page did not render page 2 with its Firebase cursor")
 	}
 
@@ -278,7 +304,7 @@ func TestHistoryPageRendersNumberedCursorPagination(t *testing.T) {
 	if got := strings.Count(response.Body.String(), "data-event-key="); got != 50 {
 		t.Fatalf("second page row count = %d, want 50", got)
 	}
-	if !strings.Contains(response.Body.String(), `href="/history?cursor=key-070&amp;cursor=key-020&amp;page=3`) {
+	if !strings.Contains(response.Body.String(), `href="/history?cursor=key-070&amp;cursor=key-020&amp;owner_uid=test-firebase-uid&amp;page=3`) {
 		t.Fatal("second page did not render page 3 with both Firebase cursors")
 	}
 
@@ -399,9 +425,7 @@ func TestDeviceWebSocketStreamsAuthenticatedFirebaseUpdates(t *testing.T) {
 	app := newTestApp(t)
 	const token = "firebase-websocket-session"
 	seedTestUser(t, app, token)
-	if _, err := app.db.Exec("UPDATE petaks SET device_id = ? WHERE user_email = ?", "farm-1", "farmer@example.com"); err != nil {
-		t.Fatal(err)
-	}
+	setTestPlotDevice(t, app, "Petak A", "farm-1")
 	app.firebase = &firebaseRTDB{
 		databaseURL: firebaseServer.URL,
 		authToken:   "test-id-token",
@@ -456,9 +480,7 @@ func TestDashboardDoesNotShowDemoValuesForUnreachableDevice(t *testing.T) {
 	app := newTestApp(t)
 	const token = "firebase-offline-session"
 	seedTestUser(t, app, token)
-	if _, err := app.db.Exec("UPDATE petaks SET device_id = ? WHERE user_email = ?", "offline-device", "farmer@example.com"); err != nil {
-		t.Fatal(err)
-	}
+	setTestPlotDevice(t, app, "Petak A", "offline-device")
 	app.firebase = &firebaseRTDB{
 		databaseURL: server.URL,
 		authToken:   "test-id-token",
@@ -488,10 +510,7 @@ func TestFirebasePumpToggleRequiresWriteCredentials(t *testing.T) {
 	app := newTestApp(t)
 	const token = "firebase-pump-session"
 	seedTestUser(t, app, token)
-	if _, err := app.db.Exec(
-		"INSERT INTO petaks (user_email, name, device_id) VALUES (?, ?, ?)",
-		"farmer@example.com", "Petak B", "farm-b",
-	); err != nil {
+	if err := app.userFirebase.putUserPlot(context.Background(), "test-firebase-uid", "Petak B", "farm-b"); err != nil {
 		t.Fatal(err)
 	}
 	form := url.Values{"petak": {"Petak B"}}
@@ -537,9 +556,7 @@ func TestFirebasePumpToggleWritesDesiredStateAndWaitsForAck(t *testing.T) {
 	app := newTestApp(t)
 	const token = "firebase-pump-toggle-session"
 	seedTestUser(t, app, token)
-	if _, err := app.db.Exec("UPDATE petaks SET device_id = ? WHERE user_email = ?", "farm-1", "farmer@example.com"); err != nil {
-		t.Fatal(err)
-	}
+	setTestPlotDevice(t, app, "Petak A", "farm-1")
 	app.firebase = &firebaseRTDB{
 		databaseURL: server.URL,
 		authToken:   "test-token",
@@ -569,6 +586,64 @@ func TestFirebasePumpToggleWritesDesiredStateAndWaitsForAck(t *testing.T) {
 	}
 }
 
+func TestSuperAdminCanControlAUsersAssignedDevice(t *testing.T) {
+	requestedTargetDevice := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, "/devices/target-farm/") {
+			http.Error(w, "unexpected Firebase device", http.StatusNotFound)
+			return
+		}
+		requestedTargetDevice = true
+		switch {
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/data_terkini.json"):
+			_, _ = io.WriteString(w, `{"pompa_menyala":false}`)
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/status_pompa.json"):
+			_, _ = io.WriteString(w, `{"mode_operasi":"MANUAL","pompa_menyala":false,"waktu_update_server":1795089478329}`)
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/desired.json"):
+			_, _ = io.WriteString(w, `{"autoMode":false,"relayOn":false,"updatedAtMs":1795089466821}`)
+		case r.Method == http.MethodPatch && strings.HasSuffix(r.URL.Path, "/desired.json"):
+			_, _ = io.WriteString(w, `{"autoMode":false,"relayOn":true}`)
+		default:
+			http.Error(w, "unexpected Firebase request", http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	app := newTestApp(t)
+	const token = "admin-control-user-plot-session"
+	seedTestUser(t, app, token)
+	target := firebaseUserProfile{
+		UID:    "target-firebase-uid",
+		Name:   "Pengguna",
+		Email:  "target@example.com",
+		Role:   "user",
+		Petaks: map[string]firebaseUserPlot{"Petak Timur": {DeviceID: "target-farm"}},
+	}
+	if err := app.userFirebase.putUserProfile(context.Background(), target); err != nil {
+		t.Fatal(err)
+	}
+	app.firebase = &firebaseRTDB{
+		databaseURL: server.URL,
+		authToken:   "test-token",
+		devicesPath: "devices",
+		httpClient:  server.Client(),
+	}
+
+	form := url.Values{
+		"petak":     {"Petak Timur"},
+		"owner_uid": {target.UID},
+	}
+	request := httptest.NewRequest(http.MethodPost, "/pump/toggle", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request.Header.Set("Accept", "application/json")
+	request.AddCookie(&http.Cookie{Name: sessionCookieName, Value: token})
+	response := httptest.NewRecorder()
+	app.ServeHTTP(response, request)
+	if response.Code != http.StatusAccepted || !requestedTargetDevice {
+		t.Fatalf("admin control response = %d, target device requested = %v; want accepted control for target-farm: %s", response.Code, requestedTargetDevice, response.Body.String())
+	}
+}
+
 func TestFirebasePumpToggleRejectsAutomaticMode(t *testing.T) {
 	writes := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -591,9 +666,7 @@ func TestFirebasePumpToggleRejectsAutomaticMode(t *testing.T) {
 	app := newTestApp(t)
 	const token = "firebase-pump-auto-session"
 	seedTestUser(t, app, token)
-	if _, err := app.db.Exec("UPDATE petaks SET device_id = ? WHERE user_email = ?", "farm-1", "farmer@example.com"); err != nil {
-		t.Fatal(err)
-	}
+	setTestPlotDevice(t, app, "Petak A", "farm-1")
 	app.firebase = &firebaseRTDB{databaseURL: server.URL, authToken: "test-token", devicesPath: "devices", httpClient: server.Client()}
 
 	form := url.Values{"petak": {"Petak A"}}
@@ -630,9 +703,7 @@ func TestFirebasePumpToggleWaitsForPreviousCommandConfirmation(t *testing.T) {
 	app := newTestApp(t)
 	const token = "firebase-pending-command-session"
 	seedTestUser(t, app, token)
-	if _, err := app.db.Exec("UPDATE petaks SET device_id = ? WHERE user_email = ?", "farm-1", "farmer@example.com"); err != nil {
-		t.Fatal(err)
-	}
+	setTestPlotDevice(t, app, "Petak A", "farm-1")
 	app.firebase = &firebaseRTDB{databaseURL: server.URL, authToken: "test-token", devicesPath: "devices", httpClient: server.Client()}
 
 	form := url.Values{"petak": {"Petak A"}}
@@ -671,9 +742,7 @@ func TestFirebaseModeControlWritesDesiredAutoMode(t *testing.T) {
 	app := newTestApp(t)
 	const token = "firebase-pump-mode-session"
 	seedTestUser(t, app, token)
-	if _, err := app.db.Exec("UPDATE petaks SET device_id = ? WHERE user_email = ?", "farm-1", "farmer@example.com"); err != nil {
-		t.Fatal(err)
-	}
+	setTestPlotDevice(t, app, "Petak A", "farm-1")
 	app.firebase = &firebaseRTDB{databaseURL: server.URL, authToken: "test-token", devicesPath: "devices", httpClient: server.Client()}
 
 	form := url.Values{"petak": {"Petak A"}, "mode": {"auto"}}
@@ -722,9 +791,7 @@ func TestSwitchingToManualPreservesCurrentRelayState(t *testing.T) {
 	app := newTestApp(t)
 	const token = "firebase-pump-manual-mode-session"
 	seedTestUser(t, app, token)
-	if _, err := app.db.Exec("UPDATE petaks SET device_id = ? WHERE user_email = ?", "farm-1", "farmer@example.com"); err != nil {
-		t.Fatal(err)
-	}
+	setTestPlotDevice(t, app, "Petak A", "farm-1")
 	app.firebase = &firebaseRTDB{databaseURL: server.URL, authToken: "test-token", devicesPath: "devices", httpClient: server.Client()}
 
 	form := url.Values{"petak": {"Petak A"}, "mode": {"manual"}}
@@ -789,9 +856,7 @@ func TestDashboardEnablesRelayControlOnlyInConfirmedManualMode(t *testing.T) {
 	app := newTestApp(t)
 	const token = "firebase-pump-control-dashboard"
 	seedTestUser(t, app, token)
-	if _, err := app.db.Exec("UPDATE petaks SET device_id = ? WHERE user_email = ?", "farm-1", "farmer@example.com"); err != nil {
-		t.Fatal(err)
-	}
+	setTestPlotDevice(t, app, "Petak A", "farm-1")
 	app.firebase = &firebaseRTDB{databaseURL: server.URL, authToken: "test-token", devicesPath: "devices", httpClient: server.Client()}
 
 	request := httptest.NewRequest(http.MethodGet, "/", nil)

@@ -3,35 +3,35 @@
   <div>
     <p class="eyebrow">KONEKTIVITAS</p>
     <h1>Perangkat</h1>
-    <p class="muted">Status perangkat untuk Sawah · {{.Petak}}.</p>
+    <p class="muted">Status perangkat untuk Sawah · {{.Petak}}{{if and .IsSuperAdmin .PetakOwnerName}} · {{.PetakOwnerName}}{{end}}.</p>
   </div>
-  <span class="status-pill"><span class="status-dot"></span> {{if .FirebaseConnected}}Terhubung ke Firebase{{else if .LinkedDeviceID}}Firebase tidak terhubung{{else}}Simulasi lokal{{end}}</span>
+  <span class="status-pill"><span class="status-dot"></span> {{if .FirebaseConnected}}Terhubung ke Firebase{{else if .LinkedDeviceID}}Firebase tidak terhubung{{else if .Petaks}}Perangkat belum ditautkan{{else}}Menunggu petak{{end}}</span>
 </div>
 {{if .DeviceError}}<p class="alert" role="alert">{{.DeviceError}}</p>{{end}}
 <section class="device-grid">
   <article class="card device-card">
     <span class="device-icon" aria-hidden="true">01</span>
     <div><p class="eyebrow">SENSOR KETINGGIAN &amp; DEBIT</p><h2>Sensor sawah</h2></div>
-    <span class="device-state">{{if .FirebaseConnected}}{{if .SensorAvailable}}Siap{{else if .SensorSeen}}Data tidak fresh{{else}}Belum ada data sensor{{end}}{{else if .LinkedDeviceID}}Tidak terhubung{{else}}Belum ditautkan{{end}}</span>
-    <p class="muted">{{if .FirebaseConnected}}Firebase terhubung ke {{.LinkedDeviceID}}. Status sensor: {{.DeviceFault}} · {{.SensorStatus}}.{{else if .LinkedDeviceID}}ID perangkat {{.LinkedDeviceID}} tersimpan, tetapi pembacaan sensor tidak tersedia.{{else}}Tambahkan ID perangkat Firebase pada petak di Beranda untuk menghubungkan sensor.{{end}}</p>
+    <span class="device-state">{{if .FirebaseConnected}}{{if .SensorAvailable}}Siap{{else if .SensorSeen}}Data tidak fresh{{else}}Belum ada data sensor{{end}}{{else if .LinkedDeviceID}}Tidak terhubung{{else if .Petaks}}Belum ditautkan{{else}}Menunggu petak{{end}}</span>
+    <p class="muted">{{if .FirebaseConnected}}Firebase terhubung ke {{.LinkedDeviceID}}. Status sensor: {{.DeviceFault}} · {{.SensorStatus}}.{{else if .LinkedDeviceID}}ID perangkat {{.LinkedDeviceID}} tersimpan, tetapi pembacaan sensor tidak tersedia.{{else if .Petaks}}Minta super admin menautkan ID perangkat Firebase pada petak ini.{{else}}Super admin perlu menambahkan petak dan ID perangkat sebelum sensor tersedia.{{end}}</p>
   </article>
   <article class="card device-card">
     <span class="device-icon" aria-hidden="true">02</span>
     <div><p class="eyebrow">KONTROL IRIGASI</p><h2>Pompa air</h2></div>
-    <span class="device-state">{{if and .FirebaseConnected .PumpStatusAvailable}}{{if .PumpOn}}Aktif{{else}}Mati{{end}}{{else if .LinkedDeviceID}}Tidak tersedia{{else}}Simulasi{{end}}</span>
-    <p class="muted">{{if .FirebaseConnected}}Status dibaca dari <code>data_terkini.pompa_menyala</code> dan <code>status_pompa</code>. {{if .DeviceControlAvailable}}Mode dan relay dapat dikontrol melalui <code>desired.autoMode</code> dan <code>desired.relayOn</code>.{{else if not .DeviceWriteAvailable}}Kontrol memerlukan kredensial Firebase dengan izin tulis.{{else if not .DesiredStateAvailable}}Field <code>desired.autoMode</code> dan <code>desired.relayOn</code> belum tersedia.{{else if .DeviceControlPending}}Perintah sebelumnya masih menunggu konfirmasi perangkat.{{else}}Status waktu perangkat belum tersedia.{{end}}{{else if .LinkedDeviceID}}Periksa token akses dan rules Realtime Database.{{else}}Status masih berupa simulasi lokal; tautkan ID perangkat untuk menggunakan Firebase.{{end}}</p>
+    <span class="device-state">{{if and .FirebaseConnected .PumpStatusAvailable}}{{if .PumpOn}}Aktif{{else}}Mati{{end}}{{else if .LinkedDeviceID}}Tidak tersedia{{else}}Belum ditautkan{{end}}</span>
+    <p class="muted">{{if .FirebaseConnected}}Status dibaca dari <code>data_terkini.pompa_menyala</code> dan <code>status_pompa</code>. {{if .DeviceControlAvailable}}Mode dan relay dapat dikontrol melalui <code>desired.autoMode</code> dan <code>desired.relayOn</code>.{{else if not .DeviceWriteAvailable}}Kontrol memerlukan kredensial Firebase dengan izin tulis.{{else if not .DesiredStateAvailable}}Field <code>desired.autoMode</code> dan <code>desired.relayOn</code> belum tersedia.{{else if .DeviceControlPending}}Perintah sebelumnya masih menunggu konfirmasi perangkat.{{else}}Status waktu perangkat belum tersedia.{{end}}{{else if .LinkedDeviceID}}Periksa token akses dan rules Realtime Database.{{else}}Kontrol pompa tersedia setelah petak ditautkan ke perangkat Firebase.{{end}}</p>
   </article>
 </section>
 <section class="card connection-card">
   <h2>Hubungkan perangkat</h2>
-  <p class="muted">{{if .FirebaseConnected}}Snapshot terbaru dimuat dari <code>devices/{{.LinkedDeviceID}}/data_terkini</code>. {{if .DebitAvailable}}Debit terbaca {{printf "%.1f" .DebitLPM}} L/mnt{{if not .FlowCalibrated}} (sensor debit belum dikalibrasi){{end}}.{{else}}Debit belum dikirim.{{end}} Riwayat, status pompa, dan batas otomatis dibaca dari <code>riwayat</code> dan <code>status_pompa</code>. Perintah kontrol memperbarui <code>desired</code>; aplikasi menunggu status perangkat mengonfirmasi perintah. Tekanan air tidak ada pada snapshot.{{else if .LinkedDeviceID}}Perangkat menggunakan path Realtime Database <code>devices/{{.LinkedDeviceID}}</code>.{{else}}Hubungkan petak dengan mengisi ID perangkat Firebase pada formulir di Beranda.{{end}}</p>
+  <p class="muted">{{if .FirebaseConnected}}Snapshot terbaru dimuat dari <code>devices/{{.LinkedDeviceID}}/data_terkini</code>. {{if .DebitAvailable}}Debit terbaca {{printf "%.1f" .DebitLPM}} L/mnt{{if not .FlowCalibrated}} (sensor debit belum dikalibrasi){{end}}.{{else}}Debit belum dikirim.{{end}} Riwayat, status pompa, dan batas otomatis dibaca dari <code>riwayat</code> dan <code>status_pompa</code>. Perintah kontrol memperbarui <code>desired</code>; aplikasi menunggu status perangkat mengonfirmasi perintah. Tekanan air tidak ada pada snapshot.{{else if .LinkedDeviceID}}Perangkat menggunakan path Realtime Database <code>devices/{{.LinkedDeviceID}}</code>.{{else}}Super admin perlu menambahkan petak dan menautkan ID perangkat Firebase.{{end}}</p>
   <div class="connection-details">
-    <div><span class="detail-label">Lokasi</span><strong>Sawah · {{.Petak}}</strong></div>
+    <div><span class="detail-label">Lokasi</span><strong>Sawah · {{.Petak}}{{if and .IsSuperAdmin .PetakOwnerName}} · {{.PetakOwnerName}}{{end}}</strong></div>
     <div><span class="detail-label">Status LoRa</span><strong>{{if .LoRaOnline}}Online{{else}}Offline{{end}}{{if .RSSIAvailable}} ({{.RSSI}} dBm){{end}}</strong></div>
     <div><span class="detail-label">Update terakhir</span><strong>{{if .LastUpdate}}{{.LastUpdateAgo}} · {{.LastUpdate}}{{else}}Tidak tersedia{{end}}</strong></div>
     <div><span class="detail-label">Konfigurasi perangkat</span><strong>{{if .ConfigFresh}}Diterima{{else if .ConfigReason}}{{.ConfigReason}}{{else}}Tidak tersedia{{end}}</strong></div>
     <div><span class="detail-label">Batas pompa otomatis</span><strong>{{if .AutoThresholdAvailable}}Mati ≤ {{printf "%.0f" .AutoOffDistanceCM}} cm · Nyala ≥ {{printf "%.0f" .AutoOnDistanceCM}} cm{{else}}Tidak tersedia{{end}}</strong></div>
-    <div><span class="detail-label">Status data</span><strong>{{if .FirebaseConnected}}Firebase Realtime Database{{else if .LinkedDeviceID}}Koneksi gagal{{else}}Fixture lokal{{end}}</strong></div>
+    <div><span class="detail-label">Status data</span><strong>{{if .FirebaseConnected}}Firebase Realtime Database{{else if .LinkedDeviceID}}Koneksi gagal{{else}}Menunggu perangkat Firebase{{end}}</strong></div>
   </div>
 </section>
 {{end}}

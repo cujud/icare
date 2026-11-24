@@ -38,38 +38,40 @@
         <img class="brand-logo" src="/static/assets/icare-logo.png" alt="iCare">
       </a>
       <nav class="side-nav" aria-label="Navigasi utama">
-        <a class="nav-link {{if eq .Active "Beranda"}}active{{end}}" href="/">Beranda</a>
-        <a class="nav-link {{if eq .Active "Riwayat"}}active{{end}}" href="/history?petak={{urlquery .Petak}}">Riwayat</a>
-        <a class="nav-link {{if eq .Active "Perangkat"}}active{{end}}" href="/devices">Perangkat</a>
-        <a class="nav-link {{if eq .Active "Profil"}}active{{end}}" href="/profile">Profil</a>
-        <p class="nav-section-label">PETAK</p>
-        {{range .Petaks}}
-        <a class="nav-link {{if and (eq $.Active "Beranda") (eq $.Petak .Name)}}active{{end}}" href="/?petak={{.Name}}">{{.Name}}</a>
+        <a class="nav-link {{if eq .Active "Beranda"}}active{{end}}" href="/">Statistik</a>
+        <a class="nav-link {{if eq .Active "Riwayat"}}active{{end}}" href="/history?petak={{urlquery .Petak}}&owner_uid={{urlquery .PetakOwnerUID}}">Riwayat</a>
+        {{if .IsSuperAdmin}}
+        <a class="nav-link {{if eq .Active "Perangkat"}}active{{end}}" href="/devices?petak={{urlquery .Petak}}&owner_uid={{urlquery .PetakOwnerUID}}">Perangkat</a>
+        <a class="nav-link {{if eq .Active "Manajemen"}}active{{end}}" href="/profile">Manajemen</a>
         {{end}}
-        <p class="nav-section-label">LAINNYA</p>
-        <span class="nav-link nav-link-placeholder" aria-disabled="true">Notifikasi</span>
-        <span class="nav-link nav-link-placeholder" aria-disabled="true">Pengaturan</span>
+        {{if .Petaks}}<p class="nav-section-label">PETAK</p>
+        {{range .Petaks}}
+        <a class="nav-link {{if and (eq $.Active "Beranda") (eq $.Petak .Name) (eq $.PetakOwnerUID .OwnerUID)}}active{{end}}" href="/?petak={{urlquery .Name}}&owner_uid={{urlquery .OwnerUID}}">{{.Name}}{{if and $.IsSuperAdmin .OwnerName}} · {{.OwnerName}}{{end}}</a>
+        {{end}}
+        {{end}}
       </nav>
       <div class="sidebar-footer">
-        <span class="demo-label"><span class="status-dot" data-realtime-dot></span><span data-realtime-status>{{if .FirebaseConnected}}Firebase terhubung{{else if .LinkedDeviceID}}Firebase offline{{else}}Simulasi lokal{{end}}</span></span>
+        <span class="demo-label"><span class="status-dot" data-realtime-dot></span><span data-realtime-status>{{if .FirebaseConnected}}Firebase terhubung{{else if .LinkedDeviceID}}Firebase offline{{else if .Petaks}}Perangkat belum ditautkan{{else}}Menunggu petak{{end}}</span></span>
         <form method="post" action="/logout">
           <button class="logout-button" type="submit">Keluar</button>
         </form>
       </div>
     </aside>
-    <main class="main-content" id="app-content" data-device-linked="{{if .LinkedDeviceID}}true{{else}}false{{end}}" data-history-page="{{.HistoryPage}}" data-device-control-available="{{.DeviceControlAvailable}}" data-device-write-available="{{.DeviceWriteAvailable}}" data-desired-updated-at="{{.DesiredUpdatedAtMS}}" data-pump-mode="{{.Mode}}" data-pump-status-available="{{.PumpStatusAvailable}}" data-chart-start-ms="{{.ChartStartMS}}" data-last-update-ms="{{.LastUpdateMS}}" data-sensor-connected="{{.SensorSeen}}" data-sensor-valid="{{.SensorValid}}" data-sensor-fresh="{{.DataFresh}}" data-lora-online="{{.LoRaOnline}}" data-initial-node="{{.DeviceNode}}" data-initial-rssi="{{if .RSSIAvailable}}{{.RSSI}}{{end}}" data-device-ws="{{if and .FirebaseConnected .LinkedDeviceID (or (eq .Active "Beranda") (eq .Active "Riwayat"))}}/ws/device?petak={{urlquery .Petak}}{{end}}">
+    <main class="main-content" id="app-content" data-device-linked="{{if .LinkedDeviceID}}true{{else}}false{{end}}" data-history-page="{{.HistoryPage}}" data-device-control-available="{{.DeviceControlAvailable}}" data-device-write-available="{{.DeviceWriteAvailable}}" data-desired-updated-at="{{.DesiredUpdatedAtMS}}" data-pump-mode="{{.Mode}}" data-pump-status-available="{{.PumpStatusAvailable}}" data-chart-start-ms="{{.ChartStartMS}}" data-last-update-ms="{{.LastUpdateMS}}" data-sensor-connected="{{.SensorSeen}}" data-sensor-valid="{{.SensorValid}}" data-sensor-fresh="{{.DataFresh}}" data-lora-online="{{.LoRaOnline}}" data-initial-node="{{.DeviceNode}}" data-initial-rssi="{{if .RSSIAvailable}}{{.RSSI}}{{end}}" data-device-ws="{{if and .FirebaseConnected .LinkedDeviceID (or (eq .Active "Beranda") (eq .Active "Riwayat"))}}/ws/device?petak={{urlquery .Petak}}&owner_uid={{urlquery .PetakOwnerUID}}{{end}}">
       <header class="mobile-header">
         <a class="brand brand-mobile" href="/" aria-label="iCare"><img class="brand-logo" src="/static/assets/icare-logo.png" alt="iCare"></a>
-        <span class="demo-label"><span class="status-dot" data-realtime-dot></span><span data-realtime-status>{{if .FirebaseConnected}}Firebase terhubung{{else if .LinkedDeviceID}}Firebase offline{{else}}Data demo{{end}}</span></span>
+        <span class="demo-label"><span class="status-dot" data-realtime-dot></span><span data-realtime-status>{{if .FirebaseConnected}}Firebase terhubung{{else if .LinkedDeviceID}}Firebase offline{{else if .Petaks}}Perangkat belum ditautkan{{else}}Menunggu petak{{end}}</span></span>
       </header>
       {{template "content" .}}
     </main>
   </div>
   <nav class="mobile-nav" aria-label="Navigasi utama">
-    <a class="{{if eq .Active "Beranda"}}active{{end}}" href="/">Beranda</a>
-    <a class="{{if eq .Active "Riwayat"}}active{{end}}" href="/history?petak={{urlquery .Petak}}">Riwayat</a>
-    <a class="{{if eq .Active "Perangkat"}}active{{end}}" href="/devices">Perangkat</a>
-    <a class="{{if eq .Active "Profil"}}active{{end}}" href="/profile">Profil</a>
+    <a class="{{if eq .Active "Beranda"}}active{{end}}" href="/">Statistik</a>
+    <a class="{{if eq .Active "Riwayat"}}active{{end}}" href="/history?petak={{urlquery .Petak}}&owner_uid={{urlquery .PetakOwnerUID}}">Riwayat</a>
+    {{if .IsSuperAdmin}}
+    <a class="{{if eq .Active "Perangkat"}}active{{end}}" href="/devices?petak={{urlquery .Petak}}&owner_uid={{urlquery .PetakOwnerUID}}">Perangkat</a>
+    <a class="{{if eq .Active "Manajemen"}}active{{end}}" href="/profile">Manajemen</a>
+    {{end}}
   </nav>
 {{end}}
   <script src="/static/app.js" defer></script>
